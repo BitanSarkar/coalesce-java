@@ -130,7 +130,21 @@ The response is a deployment id. The deployment sits in `VALIDATED` state until 
 dropped. Expect 10–30 minutes before the artifact is resolvable, and a few hours before it
 appears in search.
 
-### 4. Tag it
+### 4. Verify what actually landed
+
+Once Central has synced (10-30 minutes; the portal marks it published sooner than
+`repo1.maven.org` serves it):
+
+```bash
+./gradlew -p consumer-check test -PcoalesceVersion=<version>
+```
+
+This resolves the starter from `mavenCentral()` only and exercises it from `com.acme.app`,
+so it fails if auto-configuration did not make it into the jar — the one defect that a green
+release build cannot catch, because the in-repo demo would still work through the local
+project dependency. Needs a Redis on `localhost:6379`.
+
+### 5. Tag it
 
 ```bash
 git tag -a v0.1.0 -m "Release 0.1.0"

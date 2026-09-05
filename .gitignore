@@ -16,6 +16,12 @@ secring.gpg
 *.p12
 *.jks
 *.keystore
+# Exception: placeholder trust material under src/test/resources/ssl. These are text
+# files, not real keystores -- the SSL tests only assert that the properties resolve to a
+# URL, never that the store loads. Without this the patterns above silently drop them and
+# the build fails on a fresh clone.
+!**/src/test/resources/ssl/*.jks
+!**/src/test/resources/ssl/*.p12
 .env
 .env.*
 !.env.example
@@ -48,3 +54,5 @@ replay_pid*
 # --- OS ---
 .DS_Store
 Thumbs.db
+
+.secrets

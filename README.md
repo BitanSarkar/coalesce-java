@@ -571,18 +571,87 @@ coalesce:
   max-payload-bytes: 1048576
   redis:
     enabled: true               # false to require your own RedissonClient bean
-    address: redis://localhost:6379   # rediss:// for TLS
-    username: ""                # for ACL-enabled servers
+    mode: single                # single | cluster
+    username: ""                # ACL-enabled servers
     password: ""
+    timeout: 3s                 # command response deadline
+    connect-timeout: 10s
+```
+
+**`mode: single`**
+
+```yaml
+coalesce:
+  redis:
+    address: redis://localhost:6379    # rediss:// for TLS
     database: 0
-    timeout: 3s
     connection-pool-size: 64
     connection-minimum-idle-size: 10
 ```
 
-Every key under `coalesce.redis.*` is ignored if the application supplies its own Redisson
-client. The starter ships `spring-configuration-metadata.json`, so all of these get
-completion and inline documentation in an IDE.
+**`mode: cluster`** — seed nodes only; Redisson discovers the rest of the topology.
+
+```yaml
+coalesce:
+  redis:
+    mode: cluster
+    nodes:
+      - redis://node1:6379
+      - redis://node2:6379
+      - redis://node3:6379
+    read-mode: MASTER           # leave this alone -- see below
+    scan-interval: 5s
+    master-connection-pool-size: 64
+    master-connection-minimum-idle-size: 10
+    slave-connection-pool-size: 64
+    slave-connection-minimum-idle-size: 10
+```
+
+`database` is ignored in cluster mode (Redis Cluster only has database 0) and setting it
+logs a warning.
+
+> **`read-mode` is a correctness setting, not a performance one.** Replication is
+> asynchronous, so a replica read can show a follower a stale `FAILED` — or a stale absence —
+> for work the leader has *already completed*, and that follower will re-execute it. The
+> library warns loudly if you set anything but `MASTER`, but it honours your choice.
+
+**TLS** — applies to either mode.
+
+```yaml
+coalesce:
+  redis:
+    ssl:
+      enabled: true             # rewrites redis:// addresses to rediss://
+      truststore: classpath:redis-truststore.jks
+      truststore-password: ${REDIS_TRUSTSTORE_PASSWORD}
+      keystore: file:/etc/certs/client.p12      # mutual TLS only
+      keystore-password: ${REDIS_KEYSTORE_PASSWORD}
+      keystore-type: PKCS12
+      verification-mode: STRICT # STRICT | CA_ONLY | NONE
+      protocols: [TLSv1.3]
+      ciphers: []
+      provider: JDK             # OPENSSL needs a netty-tcnative jar on the classpath
+```
+
+`truststore` and `keystore` are Spring resources, so `classpath:`, `file:` and bare paths
+all work. Leave them unset to use the JVM's own truststore, which is usually right for a
+managed Redis with a publicly-trusted certificate.
+
+`enabled: true` exists because Redisson decides whether a connection is encrypted from the
+address scheme alone — configuring a truststore against a `redis://` address connects in
+plaintext while looking fully configured for TLS. Setting it rewrites the scheme so the two
+cannot disagree; addresses already written as `rediss://` are encrypted either way.
+
+`verification-mode: CA_ONLY` skips the hostname check, which is what a managed Redis
+addressed by IP usually needs. `NONE` disables verification entirely and makes the
+connection trivially interceptable.
+
+**Anything else** — sentinel, replicated, master-slave, or tuning these properties do not
+reach — is configured by declaring your own `RedissonClient` or `RedissonReactiveClient`
+bean. Every `coalesce.redis.*` key is ignored when you do.
+
+The starter ships `spring-configuration-metadata.json`, so all of these get completion and
+inline documentation in an IDE.
 
 ### Getting headers into the key
 
@@ -729,6 +798,7 @@ costing more than it saves.
 ```
 coalesce-spring-boot-starter/   the published library — net.bitsar:coalesce-spring-boot-starter
 coalesce-demo/                  A/B load harness, not published
+consumer-check/                 post-release check against the artifact on Maven Central
 docs/                           design notes written before the implementation
 postman/                        collection for driving the demo endpoint
 ```
@@ -761,5 +831,18 @@ each other, they will just quietly duplicate work.
 Integration tests skip themselves when Redis is not reachable on `localhost:6379`, so the
 build passes on a machine without one — but they are the tests that actually prove
 coalescing works, so run a Redis before trusting a green build.
+
+After a release, verify what actually landed on Maven Central:
+
+```bash
+./gradlew -p consumer-check test -PcoalesceVersion=0.1.0
+```
+
+`consumer-check` is a separate Gradle build, not a subproject — that is deliberate. As a
+subproject Gradle would substitute the local sources for the dependency and the check would
+quietly stop testing the published artifact. It resolves only from `mavenCentral()`, lives
+in `com.acme.app` so nothing scans `net.bitsar.coalesce`, and does not set `-parameters`,
+so it also proves the Spring Boot plugin supplies that flag as the install instructions
+claim. Needs a Redis on `localhost:6379`.
 
 Releases go out through `.github/workflows/release.yml`: create a GitHub release tagged `v<version>` and it builds, tests against a real Redis, signs and uploads the bundle to the Central Portal. Setup and the manual equivalent are in [RELEASING.md](RELEASING.md).

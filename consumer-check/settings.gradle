@@ -1,0 +1,4 @@
+// Its own build root on purpose: this project must resolve the starter from Maven Central,
+// not from the sibling source tree. Being a subproject would let Gradle substitute the
+// local project and the check would silently stop testing what was actually published.
+rootProject.name = 'coalesce-consumer-check'

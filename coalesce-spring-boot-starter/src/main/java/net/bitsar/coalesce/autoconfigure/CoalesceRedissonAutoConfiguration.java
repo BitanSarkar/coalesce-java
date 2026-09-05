@@ -3,9 +3,6 @@ package net.bitsar.coalesce.autoconfigure;
 import org.redisson.Redisson;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.RedissonReactiveClient;
-import org.redisson.codec.JsonJacksonCodec;
-import org.redisson.config.Config;
-import org.redisson.config.SingleServerConfig;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -22,10 +19,10 @@ import org.springframework.context.annotation.Bean;
  * starter, or hand-built for cluster or sentinel — keeps it, and this configuration
  * contributes only the reactive view of it.
  *
- * <p><b>Redis Cluster.</b> The single-server client built here cannot reach a cluster.
- * Declare your own bean with {@code config.useClusterServers()} and, importantly,
- * {@code setReadMode(ReadMode.MASTER)}: a stale read off a replica can show a follower a
- * {@code FAILED} state for work that has already succeeded, and it will re-execute it.
+ * <p><b>Topologies.</b> {@code coalesce.redis.mode} covers {@code SINGLE} and
+ * {@code CLUSTER}, each with authentication and TLS. Sentinel, replicated and master-slave
+ * deployments are not expressed as properties — declare your own {@code RedissonClient}
+ * bean for those and this configuration steps aside.
  */
 @AutoConfiguration
 @ConditionalOnClass({RedissonClient.class, RedissonReactiveClient.class})
@@ -38,37 +35,13 @@ public class CoalesceRedissonAutoConfiguration {
      * topology always wins.
      *
      * @param properties the {@code coalesce.redis.*} settings
-     * @return a single-server Redisson client owned by this context
+     * @return a Redisson client owned by this context
      */
     @Bean(destroyMethod = "shutdown")
     @ConditionalOnMissingBean({RedissonClient.class, RedissonReactiveClient.class})
     @ConditionalOnProperty(prefix = "coalesce.redis", name = "enabled", havingValue = "true", matchIfMissing = true)
     public RedissonClient coalesceRedissonClient(CoalesceProperties properties) {
-        CoalesceProperties.Redis redis = properties.getRedis();
-
-        Config config = new Config();
-        // Readable in redis-cli; only applies to objects that don't pick their own codec.
-        // Everything this library touches picks one explicitly (ByteArrayCodec for the
-        // envelope bucket, StringCodec for the topic).
-        config.setCodec(new JsonJacksonCodec());
-
-        SingleServerConfig server = config.useSingleServer()
-                .setAddress(redis.getAddress())
-                .setDatabase(redis.getDatabase())
-                .setTimeout((int) redis.getTimeout().toMillis())
-                .setConnectionPoolSize(redis.getConnectionPoolSize())
-                .setConnectionMinimumIdleSize(redis.getConnectionMinimumIdleSize());
-
-        // Redisson treats "" as a real credential and fails the handshake, so blanks have to
-        // become nulls rather than being passed through.
-        if (!redis.getPassword().isBlank()) {
-            server.setPassword(redis.getPassword());
-        }
-        if (!redis.getUsername().isBlank()) {
-            server.setUsername(redis.getUsername());
-        }
-
-        return Redisson.create(config);
+        return Redisson.create(RedissonConfigBuilder.build(properties.getRedis()));
     }
 
     /**
