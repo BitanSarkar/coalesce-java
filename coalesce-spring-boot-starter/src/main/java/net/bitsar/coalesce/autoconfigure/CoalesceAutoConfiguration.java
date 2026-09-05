@@ -2,6 +2,7 @@ package net.bitsar.coalesce.autoconfigure;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import net.bitsar.coalesce.annotation.CoalesceAttributeResolver;
 import net.bitsar.coalesce.aspect.CoalesceAspect;
 import net.bitsar.coalesce.aspect.CoalesceKeyResolver;
 import net.bitsar.coalesce.codec.CoalesceCodec;
@@ -12,6 +13,7 @@ import net.bitsar.coalesce.metrics.CoalesceMetrics;
 import org.aspectj.lang.annotation.Aspect;
 import org.redisson.api.RedissonReactiveClient;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.config.ConfigurableBeanFactory;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -47,6 +49,20 @@ public class CoalesceAutoConfiguration {
     @ConditionalOnMissingBean
     public CoalesceMetrics coalesceMetrics() {
         return new CoalesceMetrics();
+    }
+
+    /**
+     * Resolves {@code ${...}} in annotation attributes against the environment, which is
+     * what lets a TTL come from a property or an environment variable rather than being
+     * frozen at compile time.
+     *
+     * @param beanFactory supplies the same placeholder resolution {@code @Value} uses
+     * @return the attribute resolver
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public CoalesceAttributeResolver coalesceAttributeResolver(ConfigurableBeanFactory beanFactory) {
+        return new CoalesceAttributeResolver(beanFactory::resolveEmbeddedValue);
     }
 
     /**
@@ -93,8 +109,9 @@ public class CoalesceAutoConfiguration {
      * @param coordinator shared state across pods
      * @param codec       payload wire format
      * @param metrics     counters
-     * @param keyResolver key derivation
-     * @param properties  the {@code coalesce.*} settings
+     * @param keyResolver       key derivation
+     * @param attributeResolver placeholder resolution for annotation attributes
+     * @param properties        the {@code coalesce.*} settings
      * @return the aspect that intercepts {@code @Coalesce} methods
      */
     @Bean
@@ -104,7 +121,9 @@ public class CoalesceAutoConfiguration {
                                          CoalesceCodec codec,
                                          CoalesceMetrics metrics,
                                          CoalesceKeyResolver keyResolver,
+                                         CoalesceAttributeResolver attributeResolver,
                                          CoalesceProperties properties) {
-        return new CoalesceAspect(coordinator, codec, metrics, keyResolver, properties.getMaxPayloadBytes());
+        return new CoalesceAspect(coordinator, codec, metrics, keyResolver, attributeResolver,
+                properties.getMaxPayloadBytes());
     }
 }

@@ -1,6 +1,8 @@
 package net.bitsar.coalesce.aspect;
 
 import net.bitsar.coalesce.annotation.Coalesce;
+import net.bitsar.coalesce.annotation.CoalesceAttributeResolver;
+import net.bitsar.coalesce.annotation.CoalesceAttributes;
 import net.bitsar.coalesce.core.CoalesceKeys;
 import java.lang.reflect.Method;
 import org.junit.jupiter.api.Test;
@@ -13,6 +15,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 class CoalesceKeyResolverTest {
 
     private final CoalesceKeyResolver resolver = new CoalesceKeyResolver();
+    // null value resolver: attributes are treated as literals, which is what these tests want.
+    private final CoalesceAttributeResolver attributes = new CoalesceAttributeResolver(null);
 
     @SuppressWarnings("unused")
     static class Sample {
@@ -41,8 +45,9 @@ class CoalesceKeyResolverTest {
         return Sample.class.getDeclaredMethod(name, String.class);
     }
 
-    private Coalesce annotation(String name) throws Exception {
-        return method(name).getAnnotation(Coalesce.class);
+    private CoalesceAttributes attributes(String name) throws Exception {
+        Method m = method(name);
+        return attributes.resolve(m, m.getAnnotation(Coalesce.class));
     }
 
     @Test
@@ -51,8 +56,8 @@ class CoalesceKeyResolverTest {
         headers.add("X-Tenant-Id", "acme");
         headers.add("X-Region", "eu-west-1");
 
-        String forward = resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, annotation("withHeaders"), headers);
-        String reversed = resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, annotation("withHeadersReversed"), headers);
+        String forward = resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, attributes("withHeaders"), headers);
+        String reversed = resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, attributes("withHeadersReversed"), headers);
 
         assertThat(forward).isEqualTo(reversed);
     }
@@ -67,20 +72,20 @@ class CoalesceKeyResolverTest {
         clean.add("X-Tenant-Id", "acme");
         clean.add("X-Region", "eu-west-1");
 
-        assertThat(resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, annotation("withHeaders"), padded))
-                .isEqualTo(resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, annotation("withHeaders"), clean));
+        assertThat(resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, attributes("withHeaders"), padded))
+                .isEqualTo(resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, attributes("withHeaders"), clean));
     }
 
     @Test
     void differentArgumentsProduceDifferentKeys() throws Exception {
-        String a = resolver.resolve(method("plain"), new Object[]{"A-1"}, annotation("plain"), HttpHeaders.EMPTY);
-        String b = resolver.resolve(method("plain"), new Object[]{"A-2"}, annotation("plain"), HttpHeaders.EMPTY);
+        String a = resolver.resolve(method("plain"), new Object[]{"A-1"}, attributes("plain"), HttpHeaders.EMPTY);
+        String b = resolver.resolve(method("plain"), new Object[]{"A-2"}, attributes("plain"), HttpHeaders.EMPTY);
         assertThat(a).isNotEqualTo(b);
     }
 
     @Test
     void keyCarriesAHashTagAroundEverythingAfterThePrefix() throws Exception {
-        String key = resolver.resolve(method("plain"), new Object[]{"A-1"}, annotation("plain"), HttpHeaders.EMPTY);
+        String key = resolver.resolve(method("plain"), new Object[]{"A-1"}, attributes("plain"), HttpHeaders.EMPTY);
 
         assertThat(key).startsWith("coalesce:{").endsWith("}");
         assertThat(key.chars().filter(c -> c == '{').count()).isEqualTo(1);
@@ -89,15 +94,15 @@ class CoalesceKeyResolverTest {
 
     @Test
     void namespaceDefaultsToClassAndMethodAndIsOverridable() throws Exception {
-        assertThat(resolver.resolve(method("plain"), new Object[]{"A-1"}, annotation("plain"), HttpHeaders.EMPTY))
+        assertThat(resolver.resolve(method("plain"), new Object[]{"A-1"}, attributes("plain"), HttpHeaders.EMPTY))
                 .isEqualTo("coalesce:{Sample.plain:A-1}");
-        assertThat(resolver.resolve(method("namespaced"), new Object[]{"A-1"}, annotation("namespaced"), HttpHeaders.EMPTY))
+        assertThat(resolver.resolve(method("namespaced"), new Object[]{"A-1"}, attributes("namespaced"), HttpHeaders.EMPTY))
                 .isEqualTo("coalesce:{orders.v2:A-1}");
     }
 
     @Test
     void lockBucketAndTopicGetDistinctKeysSharingOneHashTag() throws Exception {
-        String key = resolver.resolve(method("plain"), new Object[]{"A-1"}, annotation("plain"), HttpHeaders.EMPTY);
+        String key = resolver.resolve(method("plain"), new Object[]{"A-1"}, attributes("plain"), HttpHeaders.EMPTY);
 
         String state = CoalesceKeys.discriminate(key, "state");
         String lock = CoalesceKeys.discriminate(key, "lock");

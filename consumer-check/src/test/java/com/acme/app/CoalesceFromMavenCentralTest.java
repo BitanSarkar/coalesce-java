@@ -76,6 +76,19 @@ class CoalesceFromMavenCentralTest {
     }
 
     @Test
+    void placeholderAttributesResolveFromTheEnvironment() {
+        // prices.fresh-ttl is unset, so the ${...:60} default applies. If placeholder
+        // resolution were broken in the published jar this would throw rather than cache.
+        String symbol = "ACME-" + UUID.randomUUID();
+
+        prices.quote(symbol).block(LIMIT);
+        prices.quote(symbol).block(LIMIT);
+
+        assertThat(prices.executions()).isEqualTo(1);
+        assertThat(metrics.snapshot().get("cacheHits")).isEqualTo(1L);
+    }
+
+    @Test
     void differentKeysDoNotCollide() {
         String a = "A-" + UUID.randomUUID();
         String b = "B-" + UUID.randomUUID();

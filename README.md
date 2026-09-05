@@ -25,10 +25,10 @@ interchangeable at any time.
 @Coalesce(
         key = "#orderId",
         headerKeys = {"X-Tenant-Id"},
-        freshTtlSeconds = 30,
-        staleTtlSeconds = 300,
-        pendingTtlSeconds = 20,
-        waitTimeoutSeconds = 25)
+        freshTtlSeconds = "${orders.fresh-ttl:30}",   // or just "30"
+        staleTtlSeconds = "300",
+        pendingTtlSeconds = "20",
+        waitTimeoutSeconds = "25")
 public Mono<OrderDto> getOrder(String orderId) {
     return orderClient.fetch(orderId);
 }
@@ -562,10 +562,45 @@ For a crash to be fully invisible you want `waitTimeout > pendingTtl + p99(exec)
 | `key` | *required* | SpEL over the method's parameters, e.g. `"#orderId"` |
 | `headerKeys` | `{}` | header names folded into the key; sorted internally |
 | `namespace` | `Class.method` | logical namespace prefix |
-| `freshTtlSeconds` | `0` | age below which no refresh is triggered |
-| `staleTtlSeconds` | `60` | Redis TTL; outer bound on usable staleness |
-| `pendingTtlSeconds` | `30` | lock lease — crash-recovery safety net |
-| `waitTimeoutSeconds` | `45` | follower's hard cap before `CoalesceTimeoutException` |
+| `freshTtlSeconds` | `"0"` | age below which no refresh is triggered |
+| `staleTtlSeconds` | `"60"` | Redis TTL; outer bound on usable staleness |
+| `pendingTtlSeconds` | `"30"` | lock lease — crash-recovery safety net |
+| `waitTimeoutSeconds` | `"45"` | follower's hard cap before `CoalesceTimeoutException` |
+
+### Configuring the annotation from properties or the environment
+
+Every attribute accepts a property placeholder, so TTLs do not have to be frozen at compile
+time:
+
+```java
+@Coalesce(
+        key = "#orderId",
+        freshTtlSeconds = "${orders.fresh-ttl:30}",
+        staleTtlSeconds = "${orders.stale-ttl:300}",
+        headerKeys = "${orders.headers:X-Tenant-Id}")
+public Mono<OrderDto> getOrder(String orderId) { ... }
+```
+
+Anything Spring's `Environment` can resolve works, which includes environment variables
+through relaxed binding — `ORDERS_FRESH_TTL=5` satisfies `${orders.fresh-ttl}`. So the same
+image can run with a 5-second TTL in staging and 300 in production.
+
+Three things worth knowing:
+
+- **Always give a placeholder a default** (the `:30` above) unless the property is genuinely
+  required. Attributes resolve on first invocation, not at startup, so a missing property
+  fails a request rather than failing to boot.
+- **Resolution is cached per method.** Placeholders cost nothing per call, and a property
+  changed at runtime is not picked up.
+- **A resolved `headerKeys` value is split on commas**, so one property can supply the whole
+  list: `${orders.headers:X-Tenant-Id,X-Region}`. Otherwise the list length would be fixed
+  at compile time, which defeats the point.
+
+The numeric attributes are declared as `String` for the same reason `@Scheduled` has
+`fixedDelayString`: Java requires annotation values to be compile-time constants, so
+`freshTtlSeconds = ${...}` cannot typecheck as a `long`. Literals still work — `"30"` is
+read as 30 — and a value that does not parse fails with the method name and the raw
+attribute in the message.
 
 ### Properties
 

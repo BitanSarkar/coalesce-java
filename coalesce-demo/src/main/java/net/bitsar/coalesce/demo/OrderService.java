@@ -26,10 +26,10 @@ public class OrderService {
      */
     @Coalesce(
             key = "#bucket",
-            freshTtlSeconds = 120,
-            staleTtlSeconds = 300,
-            pendingTtlSeconds = 10,
-            waitTimeoutSeconds = 3)
+            freshTtlSeconds = "${demo.coalesce.fresh-ttl:120}",
+            staleTtlSeconds = "${demo.coalesce.stale-ttl:300}",
+            pendingTtlSeconds = "${demo.coalesce.pending-ttl:10}",
+            waitTimeoutSeconds = "${demo.coalesce.wait-timeout:3}")
     public Mono<List<OrderDto>> loadCoalesced(int bucket) {
         return source.fetch(bucket, Mode.COALESCED);
     }

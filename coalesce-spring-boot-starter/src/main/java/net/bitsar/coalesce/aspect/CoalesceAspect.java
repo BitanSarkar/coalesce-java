@@ -1,6 +1,8 @@
 package net.bitsar.coalesce.aspect;
 
 import net.bitsar.coalesce.annotation.Coalesce;
+import net.bitsar.coalesce.annotation.CoalesceAttributeResolver;
+import net.bitsar.coalesce.annotation.CoalesceAttributes;
 import net.bitsar.coalesce.codec.CoalesceCodec;
 import net.bitsar.coalesce.coordinator.CoalesceCoordinator;
 import net.bitsar.coalesce.core.CoalesceState;
@@ -41,6 +43,7 @@ public class CoalesceAspect {
     private final CoalesceCodec codec;
     private final CoalesceMetrics metrics;
     private final CoalesceKeyResolver keyResolver;
+    private final CoalesceAttributeResolver attributeResolver;
 
     /**
      * Refuse to cache anything larger than this. Redisson buffers each command in Netty's
@@ -54,16 +57,19 @@ public class CoalesceAspect {
                           CoalesceCodec codec,
                           CoalesceMetrics metrics,
                           CoalesceKeyResolver keyResolver,
+                          CoalesceAttributeResolver attributeResolver,
                           int maxPayloadBytes) {
         this.coordinator = coordinator;
         this.codec = codec;
         this.metrics = metrics;
         this.keyResolver = keyResolver;
+        this.attributeResolver = attributeResolver;
         this.maxPayloadBytes = maxPayloadBytes;
     }
 
     /** One annotated call: everything the reactive chain below needs, resolved once. */
-    private record Invocation(ProceedingJoinPoint pjp, Coalesce ann, MethodSignature sig, String key, boolean flux) {
+    private record Invocation(ProceedingJoinPoint pjp, CoalesceAttributes attrs, MethodSignature sig, String key,
+                              boolean flux) {
     }
 
     // ---------- entry point ----------
@@ -75,15 +81,18 @@ public class CoalesceAspect {
 
         // The key is resolved INSIDE deferContextual: header values live in the Reactor
         // Context, which is only visible once inside the reactive chain.
+        // Placeholders resolve once per method and are cached, so this is a map lookup.
+        CoalesceAttributes attrs = attributeResolver.resolve(sig.getMethod(), coalesce);
+
         if (Flux.class.isAssignableFrom(returnType)) {
             return Flux.deferContextual(ctx -> {
-                Invocation inv = new Invocation(pjp, coalesce, sig, resolveKey(pjp, coalesce, ctx), true);
+                Invocation inv = new Invocation(pjp, attrs, sig, resolveKey(pjp, attrs, ctx), true);
                 return coalesce(inv).flatMapMany(list -> Flux.fromIterable(asList(list)));
             });
         }
         if (Mono.class.isAssignableFrom(returnType)) {
             return Mono.deferContextual(ctx ->
-                    coalesce(new Invocation(pjp, coalesce, sig, resolveKey(pjp, coalesce, ctx), false)));
+                    coalesce(new Invocation(pjp, attrs, sig, resolveKey(pjp, attrs, ctx), false)));
         }
         throw new IllegalStateException("@Coalesce only supports Mono/Flux return types, got " + returnType);
     }
@@ -112,7 +121,7 @@ public class CoalesceAspect {
         long ageMillis = System.currentTimeMillis() - state.computedAt();
         metrics.cacheHit();
 
-        if (ageMillis < inv.ann().freshTtlSeconds() * 1000L) {
+        if (ageMillis < inv.attrs().freshTtlMillis()) {
             return decode(inv, state); // fresh: nothing else happens
         }
 
@@ -139,7 +148,7 @@ public class CoalesceAspect {
 
     private Mono<Object> acquireAndExecute(Invocation inv, boolean isRefresh) {
         long lockId = LOCK_ID_SEQ.incrementAndGet();
-        Duration pendingTtl = Duration.ofSeconds(inv.ann().pendingTtlSeconds());
+        Duration pendingTtl = inv.attrs().pendingTtl();
 
         return coordinator.tryAcquire(inv.key(), lockId, pendingTtl)
                 .flatMap(acquired -> acquired
@@ -157,7 +166,7 @@ public class CoalesceAspect {
     }
 
     private Mono<Object> runAsLeader(Invocation inv, long lockId, boolean isRefresh) {
-        Duration ttl = Duration.ofSeconds(inv.ann().staleTtlSeconds());
+        Duration ttl = inv.attrs().staleTtl();
         metrics.leaderExecution();
 
         return invokeTarget(inv)
@@ -211,7 +220,7 @@ public class CoalesceAspect {
     private Mono<Object> awaitAsFollower(Invocation inv) {
         long startedAt = System.currentTimeMillis();
         return waitLoop(inv)
-                .timeout(Duration.ofSeconds(inv.ann().waitTimeoutSeconds()),
+                .timeout(inv.attrs().waitTimeout(),
                         Mono.defer(() -> {
                             metrics.timeout();
                             return Mono.error(new CoalesceTimeoutException(inv.key()));
@@ -243,7 +252,7 @@ public class CoalesceAspect {
     /** Attempt to become the leader; if another caller still holds the lock, poll and loop. */
     private Mono<Object> tryTakeOver(Invocation inv, boolean afterFailure) {
         long lockId = LOCK_ID_SEQ.incrementAndGet();
-        return coordinator.tryAcquire(inv.key(), lockId, Duration.ofSeconds(inv.ann().pendingTtlSeconds()))
+        return coordinator.tryAcquire(inv.key(), lockId, inv.attrs().pendingTtl())
                 .flatMap(acquired -> {
                     if (acquired) {
                         if (afterFailure) {
@@ -271,12 +280,12 @@ public class CoalesceAspect {
 
     // ---------- key resolution ----------
 
-    private String resolveKey(ProceedingJoinPoint pjp, Coalesce ann, ContextView ctx) {
+    private String resolveKey(ProceedingJoinPoint pjp, CoalesceAttributes attrs, ContextView ctx) {
         MethodSignature sig = (MethodSignature) pjp.getSignature();
-        HttpHeaders headers = ann.headerKeys().length == 0
+        HttpHeaders headers = attrs.headerKeys().isEmpty()
                 ? HttpHeaders.EMPTY
                 : ctx.getOrDefault(HeaderCaptureFilter.CTX_KEY, HttpHeaders.EMPTY);
-        return keyResolver.resolve(sig.getMethod(), pjp.getArgs(), ann, headers);
+        return keyResolver.resolve(sig.getMethod(), pjp.getArgs(), attrs, headers);
     }
 
     // ---------- type recovery for deserialization ----------

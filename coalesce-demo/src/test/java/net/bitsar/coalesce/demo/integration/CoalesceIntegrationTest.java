@@ -202,8 +202,8 @@ class CoalesceIntegrationTest {
             runs.set(0);
         }
 
-        @Coalesce(key = "#id", freshTtlSeconds = 1, staleTtlSeconds = 60,
-                pendingTtlSeconds = 10, waitTimeoutSeconds = 15)
+        @Coalesce(key = "#id", freshTtlSeconds = "${swr.fresh-ttl:1}", staleTtlSeconds = "60",
+                pendingTtlSeconds = "10", waitTimeoutSeconds = "15")
         public Mono<String> value(String id) {
             return Mono.defer(() -> {
                 runs.incrementAndGet();

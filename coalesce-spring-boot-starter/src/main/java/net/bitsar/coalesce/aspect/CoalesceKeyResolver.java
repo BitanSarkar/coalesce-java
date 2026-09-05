@@ -1,12 +1,14 @@
 package net.bitsar.coalesce.aspect;
 
-import net.bitsar.coalesce.annotation.Coalesce;
-import net.bitsar.coalesce.core.CoalesceKeys;
 import java.lang.reflect.Method;
-import java.util.Arrays;
+import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.stream.Collectors;
+import net.bitsar.coalesce.annotation.CoalesceAttributes;
+import net.bitsar.coalesce.core.CoalesceKeys;
 import org.springframework.core.DefaultParameterNameDiscoverer;
+import org.springframework.expression.Expression;
 import org.springframework.expression.ExpressionParser;
 import org.springframework.expression.spel.standard.SpelExpressionParser;
 import org.springframework.expression.spel.support.StandardEvaluationContext;
@@ -28,7 +30,17 @@ public class CoalesceKeyResolver {
     private final ExpressionParser parser = new SpelExpressionParser();
     private final DefaultParameterNameDiscoverer paramNames = new DefaultParameterNameDiscoverer();
 
-    public String resolve(Method method, Object[] args, Coalesce ann, HttpHeaders headers) {
+    /** Parsing SpEL allocates a syntax tree; the expression per method never changes. */
+    private final Map<String, Expression> expressions = new ConcurrentHashMap<>();
+
+    /**
+     * @param method  the annotated method
+     * @param args    its arguments for this invocation
+     * @param attrs   the annotation with placeholders already resolved
+     * @param headers request headers, or empty when there are none to fold in
+     * @return the Redis key naming this call
+     */
+    public String resolve(Method method, Object[] args, CoalesceAttributes attrs, HttpHeaders headers) {
         StandardEvaluationContext spelCtx = new StandardEvaluationContext();
 
         // DefaultParameterNameDiscoverer, not the AspectJ signature's own parameter names:
@@ -40,20 +52,22 @@ public class CoalesceKeyResolver {
             }
         }
 
-        String base = parser.parseExpression(ann.key()).getValue(spelCtx, String.class);
+        String base = expressions
+                .computeIfAbsent(attrs.keyExpression(), parser::parseExpression)
+                .getValue(spelCtx, String.class);
 
         String headerPart = "";
-        if (ann.headerKeys().length > 0) {
+        if (!attrs.headerKeys().isEmpty()) {
             HttpHeaders resolved = headers == null ? HttpHeaders.EMPTY : headers;
-            headerPart = Arrays.stream(ann.headerKeys())
+            headerPart = attrs.headerKeys().stream()
                     .sorted() // declaration order must not change the key
                     .map(h -> h + "=" + Optional.ofNullable(resolved.getFirst(h)).map(String::trim).orElse(""))
                     .collect(Collectors.joining("|"));
         }
 
-        String namespace = ann.namespace().isEmpty()
+        String namespace = attrs.namespace().isEmpty()
                 ? method.getDeclaringClass().getSimpleName() + "." + method.getName()
-                : ann.namespace();
+                : attrs.namespace();
 
         String raw = namespace + ":" + base + (headerPart.isEmpty() ? "" : ":" + headerPart);
         // The {} hash tag is REQUIRED for Redis Cluster and must be applied from the very

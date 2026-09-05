@@ -12,7 +12,9 @@ java { toolchain { languageVersion = JavaLanguageVersion.of(17) } }
 repositories { mavenCentral() }
 
 // Which published version to verify: ./gradlew -p consumer-check test -PcoalesceVersion=0.1.0
-def coalesceVersion = providers.gradleProperty('coalesceVersion').getOrElse('0.1.0')
+// Tracks the current API. 0.1.x took numeric annotation attributes and will not compile
+// against this source; pass -PcoalesceVersion explicitly to check an older release.
+def coalesceVersion = providers.gradleProperty('coalesceVersion').getOrElse('0.2.0')
 
 dependencies {
     implementation "net.bitsar:coalesce-spring-boot-starter:${coalesceVersion}"

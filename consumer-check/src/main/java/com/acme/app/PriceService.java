@@ -20,8 +20,14 @@ public class PriceService {
         executions.set(0);
     }
 
-    @Coalesce(key = "#symbol", freshTtlSeconds = 60, staleTtlSeconds = 120,
-            pendingTtlSeconds = 10, waitTimeoutSeconds = 20)
+    // Mixes a literal with placeholders on purpose: both forms have to work in the
+    // published artifact, and a placeholder that silently resolved to null would make the
+    // key collapse rather than fail loudly.
+    @Coalesce(key = "#symbol",
+            freshTtlSeconds = "${prices.fresh-ttl:60}",
+            staleTtlSeconds = "120",
+            pendingTtlSeconds = "${prices.pending-ttl:10}",
+            waitTimeoutSeconds = "20")
     public Mono<Quote> quote(String symbol) {
         return Mono.defer(() -> {
             executions.incrementAndGet();
