@@ -845,4 +845,13 @@ in `com.acme.app` so nothing scans `net.bitsar.coalesce`, and does not set `-par
 so it also proves the Spring Boot plugin supplies that flag as the install instructions
 claim. Needs a Redis on `localhost:6379`.
 
-Releases go out through `.github/workflows/release.yml`: create a GitHub release tagged `v<version>` and it builds, tests against a real Redis, signs and uploads the bundle to the Central Portal. Setup and the manual equivalent are in [RELEASING.md](RELEASING.md).
+Releases go out through `.github/workflows/release.yml`. Pushing a `v*` tag is the trigger:
+it builds, tests against a real Redis, signs, uploads to the Central Portal, waits for
+validation, and creates the GitHub Release with generated notes.
+
+```bash
+git tag v0.1.2 && git push origin v0.1.2
+```
+
+The tag must match `gradle.properties` or the run fails before uploading anything. Setup,
+the manual dispatch path, and the by-hand equivalent are in [RELEASING.md](RELEASING.md).

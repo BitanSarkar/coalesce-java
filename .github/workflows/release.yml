@@ -12,9 +12,13 @@
 
 name: Release to Maven Central
 
+# Pushing a v* tag is the release trigger. There is deliberately no
+# `release: [published]` trigger: this workflow creates the GitHub Release itself, and
+# having both would make that creation fire a second run which then fails against an
+# already-published, immutable version.
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       publishing_type:
@@ -22,12 +26,17 @@ on:
         type: choice
         default: USER_MANAGED
         options: [USER_MANAGED, AUTOMATIC]
+      tag_on_success:
+        description: 'Create and push v<version> once Central accepts the upload'
+        type: boolean
+        default: true
 
 jobs:
   release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # write: the job creates the tag and the GitHub Release once Central accepts.
+      contents: write
 
     # The integration tests skip themselves when Redis is unreachable, which would let a
     # release go out green having proved nothing about coalescing. A service container
@@ -66,15 +75,30 @@ jobs:
       # disagrees with it is always a mistake, and Central versions are immutable, so it
       # has to fail here rather than after the upload.
       - name: Check the tag matches gradle.properties
-        if: github.event_name == 'release'
+        if: startsWith(github.ref, 'refs/tags/')
         env:
-          TAG: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.ref_name }}
           VERSION: ${{ steps.version.outputs.value }}
         run: |
           if [ "${TAG#v}" != "$VERSION" ]; then
             echo "::error::Tag $TAG does not match version $VERSION in gradle.properties"
             exit 1
           fi
+
+      # A dispatch run has no tag to check, so instead refuse to re-release a version that
+      # has already been tagged. Central versions are immutable; the upload would be
+      # rejected anyway, but failing here costs 20 seconds instead of two minutes.
+      - name: Refuse to re-release an already-tagged version
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" --silent 2>/dev/null; then
+            echo "::error::v${VERSION} is already tagged. Bump the version in gradle.properties."
+            exit 1
+          fi
+          echo "v${VERSION} is not tagged yet"
 
       - name: Reject snapshots
         env:
@@ -162,3 +186,88 @@ jobs:
 
           echo "::error::Timed out after 10 minutes; check https://central.sonatype.com/publishing/deployments"
           exit 1
+
+      # Only reached once Central has accepted the bundle, so a tag never points at a
+      # commit that failed to publish. On a tag-triggered run the tag already exists and
+      # this is skipped.
+      - name: Tag the release
+        if: github.event_name == 'workflow_dispatch' && inputs.tag_on_success
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          DEPLOYMENT_ID: ${{ steps.upload.outputs.id }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${VERSION}" \
+            -m "Release ${VERSION}" \
+            -m "Built and signed by CI run ${GITHUB_RUN_ID}; Central deployment ${DEPLOYMENT_ID}."
+          git push origin "v${VERSION}"
+          echo "::notice::Tagged v${VERSION}"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.value }}
+          DEPLOYMENT_ID: ${{ steps.upload.outputs.id }}
+          PUBLISHING_TYPE: ${{ inputs.publishing_type || 'USER_MANAGED' }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+
+          # workflow_dispatch with tag_on_success=false leaves nothing to hang a release on.
+          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::notice::${TAG} was not created, so no GitHub Release was made"
+            exit 0
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release ${TAG} already exists, leaving it alone"
+            exit 0
+          fi
+
+          if [ "$PUBLISHING_TYPE" = "AUTOMATIC" ]; then
+            STATUS="Published to Maven Central."
+          else
+            STATUS="Uploaded and validated. Awaiting the Publish click at https://central.sonatype.com/publishing/deployments"
+          fi
+
+          # Quoted heredoc so nothing here is expanded by the shell -- the notes contain
+          # backticks and fenced code blocks, which an unquoted heredoc would try to run.
+          # Placeholders are substituted afterwards.
+          cat > /tmp/release-notes.tmpl <<'NOTES'
+          ```groovy
+          implementation 'net.bitsar:coalesce-spring-boot-starter:__VERSION__'
+          ```
+
+          __STATUS__
+
+          Central deployment `__DEPLOYMENT_ID__`, built by run __RUN_ID__.
+
+          Verify what actually landed:
+
+          ```bash
+          ./gradlew -p consumer-check test -PcoalesceVersion=__VERSION__
+          ```
+          NOTES
+
+          # Not `sed -i`: its in-place flag differs between GNU and BSD, and writing to a
+          # second file works identically on both, so this stays testable off the runner.
+          sed -e "s|__VERSION__|${VERSION}|g" \
+              -e "s|__STATUS__|${STATUS}|g" \
+              -e "s|__DEPLOYMENT_ID__|${DEPLOYMENT_ID}|g" \
+              -e "s|__RUN_ID__|${GITHUB_RUN_ID}|g" \
+              /tmp/release-notes.tmpl > /tmp/release-notes.md
+
+          # A version with a suffix (0.2.0-rc1, 1.0.0-beta2) is a prerelease.
+          PRERELEASE=""
+          case "$VERSION" in *-*) PRERELEASE="--prerelease" ;; esac
+
+          # --generate-notes appends the commit changelog under these notes.
+          gh release create "$TAG" \
+            --title "$VERSION" \
+            --notes-file /tmp/release-notes.md \
+            --generate-notes \
+            --verify-tag \
+            $PRERELEASE
+
+          echo "::notice::Created release ${TAG}"

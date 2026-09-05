@@ -64,21 +64,49 @@ exactly as `gpg` printed it, no `\n` escaping.
 
 Then, to cut a release:
 
-1. Bump `version` in `gradle.properties`, commit, push.
-2. Create a GitHub release tagged `v<version>` — the tag must match `gradle.properties`, or
-   the workflow fails before uploading anything. Central versions are immutable, so this
-   check exists to stop you publishing 0.1.0 under a `v0.2.0` tag.
+```bash
+# 1. bump the version, commit, push
+sed -i '' 's/^version=.*/version=0.1.2/' gradle.properties
+git commit -am "Release 0.1.2" && git push
 
-The workflow validates the Gradle wrapper, runs the full test suite **against a real Redis
-service container** (the integration tests skip themselves without one, so a release would
-otherwise go out green having proved nothing about coalescing), builds and signs the bundle,
-uploads it, and then polls until Central reports `VALIDATED` or `FAILED` rather than going
-green the moment the bytes are accepted. The bundle is kept as a build artifact for 30 days
-so a rejected deployment can be inspected without a rebuild.
+# 2. tag it -- this is the trigger
+git tag v0.1.2 && git push origin v0.1.2
+```
 
-The deployment still waits for you to press **Publish** in the portal. Run the workflow
-manually (**Actions → Release to Maven Central → Run workflow**) with `AUTOMATIC` if you
-want it to release itself once validation passes.
+Pushing a `v*` tag is what starts a release. The tag must match `gradle.properties` or the
+workflow fails before uploading anything: Central versions are immutable, so this exists to
+stop you publishing 0.1.1 under a `v0.1.2` tag.
+
+The workflow then validates the Gradle wrapper, runs the full test suite **against a real
+Redis service container** (the integration tests skip themselves without one, so a release
+would otherwise go out green having proved nothing about coalescing), builds and signs the
+bundle, uploads it, polls until Central reports `VALIDATED` or `FAILED` rather than going
+green the moment the bytes are accepted, and finally **creates the GitHub Release** from
+your tag with generated notes. The bundle is kept as a build artifact for 30 days so a
+rejected deployment can be inspected without a rebuild.
+
+The deployment still waits for you to press **Publish** in the portal.
+
+### Releasing without tagging first
+
+**Actions → Release to Maven Central → Run workflow** does the same thing but takes the
+version from `gradle.properties`, and creates and pushes `v<version>` for you *after*
+Central accepts the upload — so a tag never points at a commit that failed to publish. It
+refuses to run if that version is already tagged.
+
+Set `publishing_type` to `AUTOMATIC` if you want the deployment released as soon as
+validation passes instead of waiting for your click. Untick `tag_on_success` to upload
+without tagging at all, which is the rehearsal mode: nothing is recorded in the repo and the
+deployment can simply be dropped in the portal.
+
+A version with a suffix — `0.2.0-rc1`, `1.0.0-beta2` — is marked as a GitHub prerelease
+automatically.
+
+### Why there is no `release: published` trigger
+
+The workflow creates the GitHub Release itself. If it also triggered on one, that creation
+would fire a second run, which would then fail trying to re-upload an immutable version.
+Pushing the tag is the single entry point.
 
 The rest of this document is the manual equivalent, for a first release you want to watch
 by hand or for debugging a failing workflow run.
