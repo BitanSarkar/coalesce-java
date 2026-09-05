@@ -47,6 +47,44 @@ Newlines in a properties file must be written as literal `\n`. The environment v
 `SIGNING_KEY` and `SIGNING_PASSWORD` work too and are easier in CI, where the key can be
 pasted into a secret verbatim.
 
+## Releasing from CI (the normal path)
+
+`.github/workflows/release.yml` does everything below automatically. Add four repository
+secrets under **Settings → Secrets and variables → Actions**:
+
+| secret | value |
+|---|---|
+| `SIGNING_KEY` | the armoured private key, pasted whole — `gpg --armor --export-secret-keys <KEY_ID>`, including the `BEGIN`/`END` lines |
+| `SIGNING_PASSWORD` | the key's passphrase; add it as an empty secret if the key has none |
+| `CENTRAL_USERNAME` | username half of the portal user token |
+| `CENTRAL_PASSWORD` | password half of the portal user token |
+
+Unlike `~/.gradle/gradle.properties`, a GitHub secret takes real newlines — paste the key
+exactly as `gpg` printed it, no `\n` escaping.
+
+Then, to cut a release:
+
+1. Bump `version` in `gradle.properties`, commit, push.
+2. Create a GitHub release tagged `v<version>` — the tag must match `gradle.properties`, or
+   the workflow fails before uploading anything. Central versions are immutable, so this
+   check exists to stop you publishing 0.1.0 under a `v0.2.0` tag.
+
+The workflow validates the Gradle wrapper, runs the full test suite **against a real Redis
+service container** (the integration tests skip themselves without one, so a release would
+otherwise go out green having proved nothing about coalescing), builds and signs the bundle,
+uploads it, and then polls until Central reports `VALIDATED` or `FAILED` rather than going
+green the moment the bytes are accepted. The bundle is kept as a build artifact for 30 days
+so a rejected deployment can be inspected without a rebuild.
+
+The deployment still waits for you to press **Publish** in the portal. Run the workflow
+manually (**Actions → Release to Maven Central → Run workflow**) with `AUTOMATIC` if you
+want it to release itself once validation passes.
+
+The rest of this document is the manual equivalent, for a first release you want to watch
+by hand or for debugging a failing workflow run.
+
+---
+
 ## Each release
 
 ### 1. Set the version

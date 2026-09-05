@@ -762,4 +762,4 @@ Integration tests skip themselves when Redis is not reachable on `localhost:6379
 build passes on a machine without one — but they are the tests that actually prove
 coalescing works, so run a Redis before trusting a green build.
 
-Release steps are in [RELEASING.md](RELEASING.md).
+Releases go out through `.github/workflows/release.yml`: create a GitHub release tagged `v<version>` and it builds, tests against a real Redis, signs and uploads the bundle to the Central Portal. Setup and the manual equivalent are in [RELEASING.md](RELEASING.md).

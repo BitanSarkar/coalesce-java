@@ -1,0 +1,164 @@
+# Publishes net.bitsar:coalesce-spring-boot-starter to Maven Central.
+#
+# Replaces GitHub's stock "Maven Package" template, which could not work here: it ran
+# `mvn -B package --file pom.xml` against a Gradle project with no pom.xml, on JDK 11
+# rather than the 17 this code needs, and it targeted GitHub Packages rather than Central.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   SIGNING_KEY       armoured PGP private key, pasted whole, including the BEGIN/END lines
+#   SIGNING_PASSWORD  its passphrase (set to an empty secret if the key has none)
+#   CENTRAL_USERNAME  from Generate User Token at central.sonatype.com -- NOT the portal login
+#   CENTRAL_PASSWORD  the token's password half
+
+name: Release to Maven Central
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      publishing_type:
+        description: 'USER_MANAGED holds the upload for a manual Publish click; AUTOMATIC releases it as soon as validation passes'
+        type: choice
+        default: USER_MANAGED
+        options: [USER_MANAGED, AUTOMATIC]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    # The integration tests skip themselves when Redis is unreachable, which would let a
+    # release go out green having proved nothing about coalescing. A service container
+    # makes them actually run.
+    services:
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # gradle-wrapper.jar is a binary committed to the repo; this checks it against the
+      # known-good Gradle releases rather than trusting whatever is in the tree.
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Read project version
+        id: version
+        run: echo "value=$(./gradlew -q properties | awk '/^version:/ {print $2}')" >> "$GITHUB_OUTPUT"
+
+      # gradle.properties is the single source of truth for the version. A tag that
+      # disagrees with it is always a mistake, and Central versions are immutable, so it
+      # has to fail here rather than after the upload.
+      - name: Check the tag matches gradle.properties
+        if: github.event_name == 'release'
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::Tag $TAG does not match version $VERSION in gradle.properties"
+            exit 1
+          fi
+
+      - name: Reject snapshots
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          case "$VERSION" in
+            *-SNAPSHOT)
+              echo "::error::Maven Central does not accept snapshots (version is $VERSION)"
+              exit 1 ;;
+          esac
+
+      - name: Build and test
+        run: ./gradlew --no-daemon build
+
+      - name: Build the signed bundle
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew --no-daemon :coalesce-spring-boot-starter:centralBundle
+
+      # Kept for 30 days so a rejected deployment can be inspected without a rebuild.
+      - name: Keep the bundle as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-bundle-${{ steps.version.outputs.value }}
+          path: coalesce-spring-boot-starter/build/*-bundle.zip
+          retention-days: 30
+
+      - name: Upload to the Central Portal
+        id: upload
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          VERSION: ${{ steps.version.outputs.value }}
+          # A release-triggered run holds the deployment for a manual Publish click.
+          PUBLISHING_TYPE: ${{ inputs.publishing_type || 'USER_MANAGED' }}
+        run: |
+          set -euo pipefail
+          BUNDLE=$(ls coalesce-spring-boot-starter/build/*-bundle.zip)
+          TOKEN=$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)
+
+          DEPLOYMENT_ID=$(curl --fail-with-body --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $TOKEN" \
+            --form "bundle=@${BUNDLE}" \
+            "https://central.sonatype.com/api/v1/publisher/upload?name=net.bitsar:coalesce-spring-boot-starter:${VERSION}&publishingType=${PUBLISHING_TYPE}")
+
+          echo "Deployment id: $DEPLOYMENT_ID"
+          echo "id=$DEPLOYMENT_ID" >> "$GITHUB_OUTPUT"
+
+      # Without this the job is green the moment the bytes are accepted, which says nothing
+      # about whether Central validated the signatures, the POM or the javadoc jar.
+      - name: Wait for validation
+        env:
+          CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
+          CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
+          DEPLOYMENT_ID: ${{ steps.upload.outputs.id }}
+        run: |
+          set -euo pipefail
+          TOKEN=$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)
+
+          for attempt in $(seq 1 60); do
+            RESPONSE=$(curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Authorization: Bearer $TOKEN" \
+              "https://central.sonatype.com/api/v1/publisher/status?id=${DEPLOYMENT_ID}")
+
+            STATE=$(echo "$RESPONSE" | jq -r '.deploymentState')
+            echo "attempt ${attempt}: ${STATE}"
+
+            case "$STATE" in
+              VALIDATED)
+                echo "::notice::Validated. Press Publish at https://central.sonatype.com/publishing/deployments"
+                exit 0 ;;
+              PUBLISHED)
+                echo "::notice::Published to Maven Central."
+                exit 0 ;;
+              FAILED)
+                echo "::error::Central rejected the deployment"
+                echo "$RESPONSE" | jq '.errors // .'
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+          echo "::error::Timed out after 10 minutes; check https://central.sonatype.com/publishing/deployments"
+          exit 1
