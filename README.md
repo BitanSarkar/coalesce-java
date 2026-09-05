@@ -33,6 +33,7 @@ public Mono<OrderDto> getOrder(String orderId) {
 
 ## Contents
 
+- [Installation](#installation)
 - [Quick start](#quick-start)
 - [When to use it](#when-to-use-it) — and the arithmetic that decides
 - [When not to use it](#when-not-to-use-it)
@@ -43,15 +44,71 @@ public Mono<OrderDto> getOrder(String orderId) {
 - [Operational hazards](#operational-hazards)
 - [Benchmarking](#benchmarking)
 - [Limitations and non-goals](#limitations-and-non-goals)
+- [Repository layout](#repository-layout)
+
+---
+
+## Installation
+
+Gradle:
+
+```groovy
+implementation 'net.bitsar:coalesce-spring-boot-starter:0.1.0'
+```
+
+Maven:
+
+```xml
+<dependency>
+    <groupId>net.bitsar</groupId>
+    <artifactId>coalesce-spring-boot-starter</artifactId>
+    <version>0.1.0</version>
+</dependency>
+```
+
+Requires Java 17 and Spring Boot 3.2+. Everything wires itself through auto-configuration —
+there is nothing to `@Import` and no package to add to your component scan. Point it at a
+Redis and annotate a method:
+
+```yaml
+coalesce:
+  redis:
+    address: redis://localhost:6379
+```
+
+**One build setting is not optional.** `key = "#orderId"` is SpEL over parameter *names*,
+and since Spring 6 those are read only from the `-parameters` compiler flag. Spring Boot's
+Gradle and Maven plugins set it for you; a build that does not use them must add it, or the
+key expression silently evaluates to `null`:
+
+```groovy
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs << '-parameters'
+}
+```
+
+### Bring your own Redis client
+
+The starter builds a single-server `RedissonClient` from `coalesce.redis.*` only when the
+application has not declared one. Declare a `RedissonClient` or `RedissonReactiveClient`
+bean — from the Redisson Spring Boot starter, or by hand for cluster, sentinel or
+replicated topologies — and it is used unchanged. For Redis Cluster this is the only
+supported path, and `ReadMode.MASTER` is required: a stale read off a replica can show a
+follower a `FAILED` state for work that has already succeeded, and it will re-execute it.
+
+Every other piece backs off the same way. Declare your own `CoalesceCodec`,
+`CoalesceCoordinator`, `CoalesceKeyResolver` or `CoalesceMetrics` bean and the
+auto-configuration leaves that one alone.
 
 ---
 
 ## Quick start
 
-Needs Java 17 and a Redis on `localhost:6379`.
+The `coalesce-demo` module is an A/B load harness for the starter. It needs Java 17 and a
+Redis on `localhost:6379`.
 
 ```bash
-./gradlew bootRun
+./gradlew :coalesce-demo:bootRun
 ```
 
 ```bash
@@ -509,15 +566,23 @@ For a crash to be fully invisible you want `waitTimeout > pendingTtl + p99(exec)
 
 ```yaml
 coalesce:
+  enabled: true                 # false disables the aspect entirely; nothing touches Redis
   # Results larger than this are returned to the caller but never written to Redis.
   max-payload-bytes: 1048576
-
-spring:
-  data:
-    redis:
-      host: localhost
-      port: 6379
+  redis:
+    enabled: true               # false to require your own RedissonClient bean
+    address: redis://localhost:6379   # rediss:// for TLS
+    username: ""                # for ACL-enabled servers
+    password: ""
+    database: 0
+    timeout: 3s
+    connection-pool-size: 64
+    connection-minimum-idle-size: 10
 ```
+
+Every key under `coalesce.redis.*` is ignored if the application supplies its own Redisson
+client. The starter ships `spring-configuration-metadata.json`, so all of these get
+completion and inline documentation in an IDE.
 
 ### Getting headers into the key
 
@@ -531,7 +596,8 @@ does not work here. Two options:
 public Mono<OrderDto> place(ServerWebExchange exchange, OrderRequest req) { ... }
 ```
 
-**B. Use `HeaderCaptureFilter`** (already registered) for methods buried in a service layer.
+**B. Use `HeaderCaptureFilter`** (auto-registered in reactive web applications) for methods
+buried in a service layer.
 It stashes headers into the Reactor Context at the edge, which is why the aspect resolves
 the key *inside* `deferContextual` rather than eagerly.
 
@@ -655,3 +721,45 @@ costing more than it saves.
 - **Spring AOP proxying rules apply.** Self-invocation is not intercepted, and state must be
   read through methods rather than fields — reading a field through a CGLIB proxy returns
   the proxy's own uninitialised field, not the target's.
+
+---
+
+## Repository layout
+
+```
+coalesce-spring-boot-starter/   the published library — net.bitsar:coalesce-spring-boot-starter
+coalesce-demo/                  A/B load harness, not published
+docs/                           design notes written before the implementation
+postman/                        collection for driving the demo endpoint
+```
+
+The demo depends on the starter exactly the way a downstream application does: through the
+published artifact's auto-configuration, with no component scan reaching into
+`net.bitsar.coalesce`. If the starter stops wiring itself, the demo's integration tests fail
+rather than quietly falling back to a scanned bean.
+
+### Extension points
+
+| interface | replaces | why you would |
+|---|---|---|
+| `CoalesceCodec` | `JsonCoalesceCodec` | a different payload wire format |
+| `CoalesceCoordinator` | `RedissonCoalesceCoordinator` | a different backing store |
+| `CoalesceKeyResolver` | the SpEL resolver | a different key convention |
+| `CoalesceMetrics` | the built-in counters | export to Micrometer or similar |
+
+Declare a bean of the interface type and the auto-configuration backs off. Every pod in a
+cluster must agree: two pods with different codecs or key conventions will not coalesce with
+each other, they will just quietly duplicate work.
+
+### Building and releasing
+
+```bash
+./gradlew build                 # compiles both modules, runs all tests
+./gradlew :coalesce-spring-boot-starter:publishToMavenLocal
+```
+
+Integration tests skip themselves when Redis is not reachable on `localhost:6379`, so the
+build passes on a machine without one — but they are the tests that actually prove
+coalescing works, so run a Redis before trusting a green build.
+
+Release steps are in [RELEASING.md](RELEASING.md).

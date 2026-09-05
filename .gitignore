@@ -1,6 +1,50 @@
-build/
+# --- Gradle ---
 .gradle/
+build/
 !gradle/wrapper/gradle-wrapper.jar
+!gradle/wrapper/gradle-wrapper.properties
+
+# --- Publishing secrets ---
+# Signing keys and Central Portal tokens belong in ~/.gradle/gradle.properties or the
+# environment, never in the repo. These patterns are a second line of defence.
+gradle-local.properties
+local.properties
+secring.gpg
+*.gpg
+*.asc
+*.pem
+*.p12
+*.jks
+*.keystore
+.env
+.env.*
+!.env.example
+
+# --- IDE ---
 .idea/
 *.iml
+*.ipr
+*.iws
+out/
+.classpath
+.project
+.settings/
+bin/
+.vscode/*
+!.vscode/launch.json
+!.vscode/settings.json
+!.vscode/extensions.json
+nbproject/
+.apt_generated/
+.factorypath
+
+# --- Java / JVM ---
+*.class
+*.log
+*.hprof
+hs_err_pid*
+replay_pid*
+
+# --- OS ---
 .DS_Store
+Thumbs.db

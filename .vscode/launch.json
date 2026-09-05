@@ -2,11 +2,11 @@
     "configurations": [
         {
             "type": "java",
-            "name": "Spring Boot-CoalescePocApplication<CoalascePOC>",
+            "name": "CoalesceDemoApplication",
             "request": "launch",
             "cwd": "${workspaceFolder}",
-            "mainClass": "com.example.coalesce.CoalescePocApplication",
-            "projectName": "CoalascePOC",
+            "mainClass": "net.bitsar.coalesce.demo.CoalesceDemoApplication",
+            "projectName": "coalesce-demo",
             "args": "",
             "envFile": "${workspaceFolder}/.env"
         }

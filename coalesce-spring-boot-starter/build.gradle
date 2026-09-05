@@ -1,0 +1,171 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'signing'
+}
+
+description = 'Distributed reactive call coalescing with stale-while-revalidate for Spring Boot, backed by Redis via Redisson'
+
+java {
+    withSourcesJar()
+    withJavadocJar()
+}
+
+dependencies {
+    // Exposed to consumers so a Maven build resolves the same versions Spring Boot pins.
+    api platform("org.springframework.boot:spring-boot-dependencies:${springBootVersion}")
+
+    // api, not implementation: all four appear in public signatures — RedissonReactiveClient
+    // in the coordinator's constructor, ObjectMapper in the codec's, HttpHeaders in the key
+    // resolver's, Mono/Flux on every method a caller annotates.
+    api 'org.springframework:spring-context'
+    api 'org.springframework:spring-web'
+    api 'io.projectreactor:reactor-core'
+    api 'com.fasterxml.jackson.core:jackson-databind'
+    api "org.redisson:redisson:${redissonVersion}"
+
+    // Consumers never reference these directly.
+    implementation 'org.springframework:spring-aop'
+    implementation 'org.springframework:spring-expression'
+    implementation 'org.aspectj:aspectjweaver'
+    implementation 'org.slf4j:slf4j-api'
+
+    // Auto-configuration is the whole point of the "starter" suffix, so it is api: a
+    // consumer's Boot app must see the same spring-boot-autoconfigure this was built against.
+    api 'org.springframework.boot:spring-boot-autoconfigure'
+
+    // Generates META-INF/spring-configuration-metadata.json, which is what gives the
+    // `coalesce.*` keys IDE completion and inline documentation in a consumer's project.
+    // The annotationProcessor configuration does not extend api, so it needs the BOM too.
+    annotationProcessor platform("org.springframework.boot:spring-boot-dependencies:${springBootVersion}")
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'io.projectreactor:reactor-test'
+    // Gradle ships its own junit-platform-launcher, older than the engine this BOM pins.
+    // Declaring it here lets the BOM align the two; without it, discovery fails outright.
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(Javadoc).configureEach {
+    options.encoding = 'UTF-8'
+    // Enforce well-formed javadoc without demanding a doc comment on every public member.
+    options.addStringOption('Xdoclint:all,-missing', '-quiet')
+}
+
+// Apache-2.0 asks that the licence and notice travel with every distributed copy, which
+// for a library means inside the jar as well as in the repo.
+tasks.withType(Jar).configureEach {
+    metaInf {
+        from rootProject.file('LICENSE')
+        from rootProject.file('NOTICE')
+    }
+}
+
+// Byte-for-byte identical jars across machines, so a rebuild of a released tag can be
+// diffed against what is on Central.
+tasks.withType(AbstractArchiveTask).configureEach {
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            artifactId = 'coalesce-spring-boot-starter'
+
+            pom {
+                name = 'Coalesce Spring Boot Starter'
+                description = project.description
+                url = 'https://github.com/BitanSarkar/CoalescePOC'
+                inceptionYear = '2026'
+
+                licenses {
+                    license {
+                        name = 'The Apache License, Version 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0.txt'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'bitansarkar'
+                        name = 'Bitan Sarkar'
+                        url = 'https://github.com/BitanSarkar'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/BitanSarkar/CoalescePOC.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/BitanSarkar/CoalescePOC.git'
+                    url = 'https://github.com/BitanSarkar/CoalescePOC'
+                }
+                issueManagement {
+                    system = 'GitHub Issues'
+                    url = 'https://github.com/BitanSarkar/CoalescePOC/issues'
+                }
+            }
+        }
+    }
+
+    repositories {
+        // A plain directory, not a remote server: the Central Portal takes an uploaded
+        // bundle rather than a Maven deploy, so the release is staged here first and zipped
+        // by the `centralBundle` task below.
+        maven {
+            name = 'staging'
+            url = layout.buildDirectory.dir('staging-deploy')
+        }
+    }
+}
+
+signing {
+    // Armoured private key and its passphrase, from the environment in CI or from
+    // ~/.gradle/gradle.properties locally. Absent both, signing is skipped so that an
+    // ordinary `build` or `publishToMavenLocal` still works on a machine with no key.
+    def signingKey = providers.environmentVariable('SIGNING_KEY')
+            .orElse(providers.gradleProperty('signingKey'))
+    def signingPassword = providers.environmentVariable('SIGNING_PASSWORD')
+            .orElse(providers.gradleProperty('signingPassword'))
+
+    if (signingKey.isPresent()) {
+        useInMemoryPgpKeys(signingKey.get(), signingPassword.getOrElse(''))
+        sign publishing.publications.mavenJava
+    }
+}
+
+def stagingDir = layout.buildDirectory.dir('staging-deploy')
+
+tasks.named('publishMavenJavaPublicationToStagingRepository') {
+    // Without this, artifacts from an earlier version linger in the staging tree and get
+    // swept into the bundle, which the Portal rejects as an unexpected deployment.
+    doFirst { delete stagingDir }
+}
+
+tasks.register('centralBundle', Zip) {
+    group = 'publishing'
+    description = 'Builds the signed zip to upload to https://central.sonatype.com'
+
+    dependsOn tasks.named('publishMavenJavaPublicationToStagingRepository')
+    from stagingDir
+    // Generated for the local directory layout; the Portal maintains its own and rejects
+    // deployments that try to supply one.
+    exclude '**/maven-metadata*'
+    archiveFileName = "${project.name}-${project.version}-bundle.zip"
+    destinationDirectory = layout.buildDirectory
+
+    doFirst {
+        if (project.version.toString().endsWith('-SNAPSHOT')) {
+            throw new GradleException(
+                    "Maven Central rejects snapshots; set a release version in gradle.properties (currently ${project.version})")
+        }
+        if (tasks.withType(Sign).every { it.enabled && it.signatures.isEmpty() }) {
+            throw new GradleException(
+                    'No PGP signatures were produced. Set SIGNING_KEY/SIGNING_PASSWORD (or signingKey/signingPassword) — Central rejects unsigned bundles.')
+        }
+    }
+
+    doLast {
+        logger.lifecycle("Central bundle ready: ${archiveFile.get().asFile}")
+    }
+}

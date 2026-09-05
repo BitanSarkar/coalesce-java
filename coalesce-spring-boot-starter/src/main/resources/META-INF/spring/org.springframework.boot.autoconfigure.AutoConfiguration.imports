@@ -1,0 +1,3 @@
+net.bitsar.coalesce.autoconfigure.CoalesceRedissonAutoConfiguration
+net.bitsar.coalesce.autoconfigure.CoalesceAutoConfiguration
+net.bitsar.coalesce.autoconfigure.CoalesceWebFluxAutoConfiguration
