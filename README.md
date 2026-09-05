@@ -861,6 +861,11 @@ Declare a bean of the interface type and the auto-configuration backs off. Every
 cluster must agree: two pods with different codecs or key conventions will not coalesce with
 each other, they will just quietly duplicate work.
 
+### Contributing
+
+Work lands through a pull request from a feature branch; `main` is the released line, and
+merging to it publishes to Maven Central. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ### Continuous integration
 
 `.github/workflows/ci.yml` runs on every pull request against `main`. It builds both
