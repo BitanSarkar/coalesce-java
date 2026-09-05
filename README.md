@@ -828,8 +828,8 @@ each other, they will just quietly duplicate work.
 
 ### Continuous integration
 
-`.github/workflows/ci.yml` runs on every push to `main` and every pull request against it.
-It builds both modules and runs the whole suite against a Redis service container, then
+`.github/workflows/ci.yml` runs on every pull request against `main`. It builds both
+modules and runs the whole suite against a Redis service container, then
 writes a per-suite table to the run summary — because "BUILD SUCCESSFUL" alone cannot tell a
 run where the Redis-gated integration tests executed from one where they all skipped, and
 those are the only tests that prove coalescing works.
@@ -839,8 +839,10 @@ carries `name`, `description`, `url`, `licenses`, `developers` and `scm`. Maven 
 rejects a POM missing any of them, and discovering that mid-release means burning a version
 number.
 
-CI holds no credentials and has read-only permissions; publishing lives entirely in the
-release workflow.
+CI holds no credentials and has read-only permissions. It deliberately does not run on
+pushes to `main`: merging there triggers the release workflow, which runs this same build
+before publishing, so duplicating it would only burn minutes and produce two conflicting
+status checks for one commit.
 
 ### Building and releasing
 
@@ -866,13 +868,18 @@ in `com.acme.app` so nothing scans `net.bitsar.coalesce`, and does not set `-par
 so it also proves the Spring Boot plugin supplies that flag as the install instructions
 claim. Needs a Redis on `localhost:6379`.
 
-Releases go out through `.github/workflows/release.yml`. Pushing a `v*` tag is the trigger:
-it builds, tests against a real Redis, signs, uploads to the Central Portal, waits for
-validation, and creates the GitHub Release with generated notes.
+Releases go out through `.github/workflows/release.yml`, and **every merge to `main`
+publishes a permanent release**: it builds, tests against a real Redis, signs, uploads to
+the Central Portal, waits for Central to confirm, tags `v<version>`, creates the GitHub
+Release, then opens the next patch version and points these install snippets at what was
+just published.
+
+Maven Central versions are immutable, so each merge burns a patch number forever. To merge
+without publishing:
 
 ```bash
-git tag v0.1.2 && git push origin v0.1.2
+git commit -m "Fix a typo [skip release]"
 ```
 
-The tag must match `gradle.properties` or the run fails before uploading anything. Setup,
-the manual dispatch path, and the by-hand equivalent are in [RELEASING.md](RELEASING.md).
+`.github/workflows/ci.yml` runs the same build on pull requests, without credentials. Setup,
+the tag-driven path, and the by-hand equivalent are in [RELEASING.md](RELEASING.md).

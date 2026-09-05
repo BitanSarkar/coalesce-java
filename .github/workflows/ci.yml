@@ -1,22 +1,24 @@
-# Runs on every push to main (so: on merge) and on every pull request targeting it.
+# Runs on every pull request targeting main.
 #
-# Releasing is a separate workflow triggered by pushing a v* tag. This one never publishes
-# anything -- it has no credentials and read-only permissions.
+# Deliberately not on push to main: merging there triggers the release workflow, which runs
+# this same build before publishing. Duplicating it would just burn minutes and produce two
+# conflicting status checks for one commit.
+#
+# This workflow never publishes anything -- it has no credentials and read-only permissions.
 
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
 
 # One run per branch. A new push to a PR cancels the previous run, since only the latest
 # commit matters there; runs on main are left alone so the history of main stays complete.
+# A new push to a PR makes the previous run irrelevant.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

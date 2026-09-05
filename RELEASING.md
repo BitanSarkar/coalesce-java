@@ -62,51 +62,58 @@ secrets under **Settings → Secrets and variables → Actions**:
 Unlike `~/.gradle/gradle.properties`, a GitHub secret takes real newlines — paste the key
 exactly as `gpg` printed it, no `\n` escaping.
 
-Then, to cut a release:
+### How a release happens
 
-```bash
-# 1. bump the version, commit, push
-sed -i '' 's/^version=.*/version=0.1.2/' gradle.properties
-git commit -am "Release 0.1.2" && git push
+**Every merge to `main` publishes a permanent release.** The workflow reads the version from
+`gradle.properties`, builds, tests against a real Redis, signs, uploads to the Central
+Portal with `publishingType=AUTOMATIC`, waits until Central reports `PUBLISHED`, tags
+`v<version>`, creates the GitHub Release, and then commits the next patch version back to
+`main` so the following merge has a free number.
 
-# 2. tag it -- this is the trigger
-git tag v0.1.2 && git push origin v0.1.2
+That bump commit also rewrites the README install snippets to the version just published,
+so the README always advertises something a consumer can actually resolve.
+
+```
+merge  ->  publishes 0.1.2, tags v0.1.2, opens 0.1.3
+merge  ->  publishes 0.1.3, tags v0.1.3, opens 0.1.4
 ```
 
-Pushing a `v*` tag is what starts a release. The tag must match `gradle.properties` or the
-workflow fails before uploading anything: Central versions are immutable, so this exists to
-stop you publishing 0.1.1 under a `v0.1.2` tag.
+### What that costs you
 
-The workflow then validates the Gradle wrapper, runs the full test suite **against a real
-Redis service container** (the integration tests skip themselves without one, so a release
-would otherwise go out green having proved nothing about coalescing), builds and signs the
-bundle, uploads it, polls until Central reports `VALIDATED` or `FAILED` rather than going
-green the moment the bytes are accepted, and finally **creates the GitHub Release** from
-your tag with generated notes. The bundle is kept as a build artifact for 30 days so a
-rejected deployment can be inspected without a rebuild.
+Maven Central versions are **immutable**: they cannot be deleted, replaced, or reused. Every
+merge burns a patch number permanently, including a README typo fix. A bad merge is public
+and cannot be withdrawn — only superseded by another release.
 
-The deployment still waits for you to press **Publish** in the portal.
+To merge without publishing, put `[skip release]` in the commit message:
 
-### Releasing without tagging first
+```bash
+git commit -m "Fix a typo in the README [skip release]"
+```
 
-**Actions → Release to Maven Central → Run workflow** does the same thing but takes the
-version from `gradle.properties`, and creates and pushes `v<version>` for you *after*
-Central accepts the upload — so a tag never points at a commit that failed to publish. It
-refuses to run if that version is already tagged.
+Bump the minor or major version by editing `gradle.properties` in your own commit; the
+workflow only ever auto-increments the patch.
 
-Set `publishing_type` to `AUTOMATIC` if you want the deployment released as soon as
-validation passes instead of waiting for your click. Untick `tag_on_success` to upload
-without tagging at all, which is the rehearsal mode: nothing is recorded in the repo and the
-deployment can simply be dropped in the portal.
+### Why the bump commit does not loop
 
-A version with a suffix — `0.2.0-rc1`, `1.0.0-beta2` — is marked as a GitHub prerelease
-automatically.
+The bump is pushed with `GITHUB_TOKEN`, and pushes made with that token deliberately do not
+trigger workflow runs. It also carries `[skip ci]`, and the job has an `if` guard that skips
+such commits — three independent reasons it cannot release itself in a loop.
 
-### Why there is no `release: published` trigger
+Concurrency is `release-to-central` with `cancel-in-progress: false`: two merges landing
+close together queue rather than racing, since both would otherwise read the same version
+out of `gradle.properties` and the second upload would be rejected as a duplicate.
 
-The workflow creates the GitHub Release itself. If it also triggered on one, that creation
-would fire a second run, which would then fail trying to re-upload an immutable version.
-Pushing the tag is the single entry point.
+### Releasing without merging
+
+Pushing a `v*` tag releases whatever `gradle.properties` holds, skipping the auto-bump. The
+tag must match the file or the run fails before uploading anything.
+
+**Actions → Release to Maven Central → Run workflow** does the same from the current `main`,
+and lets you choose `USER_MANAGED` to hold the deployment for a manual Publish click instead
+of releasing immediately.
+
+If a version is somehow already on Central, the run detects it in about twenty seconds and
+skips publishing with a warning instead of failing two minutes later on a rejected upload.
 
 The rest of this document is the manual equivalent, for a first release you want to watch
 by hand or for debugging a failing workflow run.

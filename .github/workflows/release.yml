@@ -1,46 +1,51 @@
 # Publishes net.bitsar:coalesce-spring-boot-starter to Maven Central.
 #
-# Replaces GitHub's stock "Maven Package" template, which could not work here: it ran
-# `mvn -B package --file pom.xml` against a Gradle project with no pom.xml, on JDK 11
-# rather than the 17 this code needs, and it targeted GitHub Packages rather than Central.
+# Every merge to main publishes a permanent release. Maven Central versions are immutable:
+# they cannot be deleted, replaced or reused, so each merge burns a patch number forever.
+# Put [skip release] in a commit message to merge without publishing.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   SIGNING_KEY       armoured PGP private key, pasted whole, including the BEGIN/END lines
-#   SIGNING_PASSWORD  its passphrase (set to an empty secret if the key has none)
+#   SIGNING_PASSWORD  its passphrase (an empty secret if the key has none)
 #   CENTRAL_USERNAME  from Generate User Token at central.sonatype.com -- NOT the portal login
 #   CENTRAL_PASSWORD  the token's password half
 
 name: Release to Maven Central
 
-# Pushing a v* tag is the release trigger. There is deliberately no
-# `release: [published]` trigger: this workflow creates the GitHub Release itself, and
-# having both would make that creation fire a second run which then fails against an
-# already-published, immutable version.
 on:
   push:
+    branches: [main]
+    # A tag still works as an explicit release of whatever gradle.properties holds; that
+    # path skips the auto-bump.
     tags: ['v*']
   workflow_dispatch:
     inputs:
       publishing_type:
-        description: 'USER_MANAGED holds the upload for a manual Publish click; AUTOMATIC releases it as soon as validation passes'
+        description: 'AUTOMATIC releases as soon as validation passes; USER_MANAGED holds it for a manual Publish click'
         type: choice
-        default: USER_MANAGED
-        options: [USER_MANAGED, AUTOMATIC]
-      tag_on_success:
-        description: 'Create and push v<version> once Central accepts the upload'
-        type: boolean
-        default: true
+        default: AUTOMATIC
+        options: [AUTOMATIC, USER_MANAGED]
+
+# Never cancel a release in flight, and never run two at once: concurrent runs would read
+# the same version out of gradle.properties and the second would be rejected as a duplicate.
+concurrency:
+  group: release-to-central
+  cancel-in-progress: false
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    # Skip merges explicitly marked, and skip the workflow's own version-bump commit.
+    # Pushes made with GITHUB_TOKEN do not trigger workflows, so the bump cannot loop;
+    # this check is a second line of defence, not the primary one.
+    if: >-
+      !contains(github.event.head_commit.message, '[skip release]') &&
+      !contains(github.event.head_commit.message, '[skip ci]')
+
     permissions:
-      # write: the job creates the tag and the GitHub Release once Central accepts.
+      # write: the job pushes the version bump, the tag, and the GitHub Release.
       contents: write
 
-    # The integration tests skip themselves when Redis is unreachable, which would let a
-    # release go out green having proved nothing about coalescing. A service container
-    # makes them actually run.
     services:
       redis:
         image: redis:7-alpine
@@ -54,9 +59,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The bump is committed back to main, so check out the branch rather than the
+          # detached commit, and keep credentials for the push.
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
 
-      # gradle-wrapper.jar is a binary committed to the repo; this checks it against the
-      # known-good Gradle releases rather than trusting whatever is in the tree.
       - name: Validate Gradle wrapper
         uses: gradle/actions/wrapper-validation@v4
 
@@ -69,36 +77,10 @@ jobs:
 
       - name: Read project version
         id: version
-        run: echo "value=$(./gradlew -q properties | awk '/^version:/ {print $2}')" >> "$GITHUB_OUTPUT"
-
-      # gradle.properties is the single source of truth for the version. A tag that
-      # disagrees with it is always a mistake, and Central versions are immutable, so it
-      # has to fail here rather than after the upload.
-      - name: Check the tag matches gradle.properties
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.version.outputs.value }}
         run: |
-          if [ "${TAG#v}" != "$VERSION" ]; then
-            echo "::error::Tag $TAG does not match version $VERSION in gradle.properties"
-            exit 1
-          fi
-
-      # A dispatch run has no tag to check, so instead refuse to re-release a version that
-      # has already been tagged. Central versions are immutable; the upload would be
-      # rejected anyway, but failing here costs 20 seconds instead of two minutes.
-      - name: Refuse to re-release an already-tagged version
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.value }}
-        run: |
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/v${VERSION}" --silent 2>/dev/null; then
-            echo "::error::v${VERSION} is already tagged. Bump the version in gradle.properties."
-            exit 1
-          fi
-          echo "v${VERSION} is not tagged yet"
+          VERSION=$(./gradlew -q properties | awk '/^version:/ {print $2}')
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${VERSION}"
 
       - name: Reject snapshots
         env:
@@ -110,17 +92,51 @@ jobs:
               exit 1 ;;
           esac
 
+      - name: Check the tag matches gradle.properties
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          TAG: ${{ github.ref_name }}
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          if [ "${TAG#v}" != "$VERSION" ]; then
+            echo "::error::Tag $TAG does not match version $VERSION in gradle.properties"
+            exit 1
+          fi
+
+      # Central versions are immutable, so a duplicate upload is always rejected. Checking
+      # first turns a two-minute failure into a twenty-second, clearly-explained skip --
+      # which matters when this runs on every merge.
+      - name: Skip if this version is already published
+        id: published
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          URL="https://repo1.maven.org/maven2/net/bitsar/coalesce-spring-boot-starter/${VERSION}/coalesce-spring-boot-starter-${VERSION}.pom"
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$URL" || echo "000")
+          if [ "$CODE" = "200" ]; then
+            echo "::warning::${VERSION} is already on Maven Central; nothing to publish. Was the version bump not committed?"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "${VERSION} is not published yet"
+          fi
+
       - name: Build and test
         run: ./gradlew --no-daemon build
 
+      - name: Summarise test results
+        if: always()
+        run: python3 .github/scripts/test-summary.py >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build the signed bundle
+        if: steps.published.outputs.skip == 'false'
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: ./gradlew --no-daemon :coalesce-spring-boot-starter:centralBundle
 
-      # Kept for 30 days so a rejected deployment can be inspected without a rebuild.
       - name: Keep the bundle as a build artifact
+        if: steps.published.outputs.skip == 'false'
         uses: actions/upload-artifact@v4
         with:
           name: central-bundle-${{ steps.version.outputs.value }}
@@ -129,12 +145,12 @@ jobs:
 
       - name: Upload to the Central Portal
         id: upload
+        if: steps.published.outputs.skip == 'false'
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
           VERSION: ${{ steps.version.outputs.value }}
-          # A release-triggered run holds the deployment for a manual Publish click.
-          PUBLISHING_TYPE: ${{ inputs.publishing_type || 'USER_MANAGED' }}
+          PUBLISHING_TYPE: ${{ inputs.publishing_type || 'AUTOMATIC' }}
         run: |
           set -euo pipefail
           BUNDLE=$(ls coalesce-spring-boot-starter/build/*-bundle.zip)
@@ -151,16 +167,19 @@ jobs:
 
       # Without this the job is green the moment the bytes are accepted, which says nothing
       # about whether Central validated the signatures, the POM or the javadoc jar.
-      - name: Wait for validation
+      - name: Wait for the deployment to finish
+        id: wait
+        if: steps.published.outputs.skip == 'false'
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
           DEPLOYMENT_ID: ${{ steps.upload.outputs.id }}
+          PUBLISHING_TYPE: ${{ inputs.publishing_type || 'AUTOMATIC' }}
         run: |
           set -euo pipefail
           TOKEN=$(printf '%s:%s' "$CENTRAL_USERNAME" "$CENTRAL_PASSWORD" | base64 -w0)
 
-          for attempt in $(seq 1 60); do
+          for attempt in $(seq 1 90); do
             RESPONSE=$(curl --fail-with-body --silent --show-error \
               --request POST \
               --header "Authorization: Bearer $TOKEN" \
@@ -170,11 +189,13 @@ jobs:
             echo "attempt ${attempt}: ${STATE}"
 
             case "$STATE" in
-              VALIDATED)
-                echo "::notice::Validated. Press Publish at https://central.sonatype.com/publishing/deployments"
-                exit 0 ;;
               PUBLISHED)
-                echo "::notice::Published to Maven Central."
+                echo "::notice::Published ${DEPLOYMENT_ID} to Maven Central"
+                exit 0 ;;
+              VALIDATED)
+                # Only reachable under USER_MANAGED; AUTOMATIC moves straight on to
+                # PUBLISHING. Nothing further will happen without a human, so stop here.
+                echo "::notice::Validated, awaiting a Publish click at https://central.sonatype.com/publishing/deployments"
                 exit 0 ;;
               FAILED)
                 echo "::error::Central rejected the deployment"
@@ -184,14 +205,14 @@ jobs:
             sleep 10
           done
 
-          echo "::error::Timed out after 10 minutes; check https://central.sonatype.com/publishing/deployments"
+          echo "::error::Timed out after 15 minutes; check https://central.sonatype.com/publishing/deployments"
           exit 1
 
-      # Only reached once Central has accepted the bundle, so a tag never points at a
-      # commit that failed to publish. On a tag-triggered run the tag already exists and
-      # this is skipped.
+      # Everything below runs only after Central has accepted the artifact, so the repo
+      # never records a release that did not actually publish.
+
       - name: Tag the release
-        if: github.event_name == 'workflow_dispatch' && inputs.tag_on_success
+        if: steps.published.outputs.skip == 'false' && !startsWith(github.ref, 'refs/tags/')
         env:
           VERSION: ${{ steps.version.outputs.value }}
           DEPLOYMENT_ID: ${{ steps.upload.outputs.id }}
@@ -206,42 +227,28 @@ jobs:
           echo "::notice::Tagged v${VERSION}"
 
       - name: Create the GitHub Release
+        if: steps.published.outputs.skip == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.value }}
           DEPLOYMENT_ID: ${{ steps.upload.outputs.id }}
-          PUBLISHING_TYPE: ${{ inputs.publishing_type || 'USER_MANAGED' }}
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
 
-          # workflow_dispatch with tag_on_success=false leaves nothing to hang a release on.
-          if ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-            echo "::notice::${TAG} was not created, so no GitHub Release was made"
-            exit 0
-          fi
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "::notice::Release ${TAG} already exists, leaving it alone"
             exit 0
           fi
 
-          if [ "$PUBLISHING_TYPE" = "AUTOMATIC" ]; then
-            STATUS="Published to Maven Central."
-          else
-            STATUS="Uploaded and validated. Awaiting the Publish click at https://central.sonatype.com/publishing/deployments"
-          fi
-
           # Quoted heredoc so nothing here is expanded by the shell -- the notes contain
           # backticks and fenced code blocks, which an unquoted heredoc would try to run.
-          # Placeholders are substituted afterwards.
           cat > /tmp/release-notes.tmpl <<'NOTES'
           ```groovy
           implementation 'net.bitsar:coalesce-spring-boot-starter:__VERSION__'
           ```
 
-          __STATUS__
-
-          Central deployment `__DEPLOYMENT_ID__`, built by run __RUN_ID__.
+          Published to Maven Central. Central deployment `__DEPLOYMENT_ID__`, built by run __RUN_ID__.
 
           Verify what actually landed:
 
@@ -253,7 +260,6 @@ jobs:
           # Not `sed -i`: its in-place flag differs between GNU and BSD, and writing to a
           # second file works identically on both, so this stays testable off the runner.
           sed -e "s|__VERSION__|${VERSION}|g" \
-              -e "s|__STATUS__|${STATUS}|g" \
               -e "s|__DEPLOYMENT_ID__|${DEPLOYMENT_ID}|g" \
               -e "s|__RUN_ID__|${GITHUB_RUN_ID}|g" \
               /tmp/release-notes.tmpl > /tmp/release-notes.md
@@ -262,7 +268,6 @@ jobs:
           PRERELEASE=""
           case "$VERSION" in *-*) PRERELEASE="--prerelease" ;; esac
 
-          # --generate-notes appends the commit changelog under these notes.
           gh release create "$TAG" \
             --title "$VERSION" \
             --notes-file /tmp/release-notes.md \
@@ -271,3 +276,36 @@ jobs:
             $PRERELEASE
 
           echo "::notice::Created release ${TAG}"
+
+      # Opens the next patch so the following merge has a free version to publish, and
+      # points the README at what consumers can actually resolve right now.
+      #
+      # Pushed with GITHUB_TOKEN, whose pushes deliberately do not trigger workflows --
+      # that is what stops this from releasing itself in a loop.
+      - name: Open the next patch version
+        if: steps.published.outputs.skip == 'false' && github.ref == 'refs/heads/main'
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          NEXT=$(echo "$VERSION" | awk -F. -v OFS=. '{ $NF = $NF + 1; print }')
+
+          sed -e "s|^version=.*|version=${NEXT}|" gradle.properties > gradle.properties.tmp
+          mv gradle.properties.tmp gradle.properties
+
+          # README advertises the newest resolvable version, which is the one just published.
+          sed -e "s|net.bitsar:coalesce-spring-boot-starter:[0-9][0-9.]*|net.bitsar:coalesce-spring-boot-starter:${VERSION}|g" \
+              -e "s|<version>[0-9][0-9.]*</version>|<version>${VERSION}</version>|g" \
+              README.md > README.md.tmp
+          mv README.md.tmp README.md
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add gradle.properties README.md
+          git commit -m "Open ${NEXT} for development [skip ci]" \
+            -m "${VERSION} is published and immutable, so development moves to the next patch."
+
+          # Another merge may have landed while Central was publishing.
+          git pull --rebase origin main
+          git push origin HEAD:main
+          echo "::notice::Opened ${NEXT}; README now advertises ${VERSION}"
