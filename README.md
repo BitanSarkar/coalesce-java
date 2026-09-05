@@ -1,5 +1,10 @@
 # `@Coalesce`
 
+[![CI](https://github.com/BitanSarkar/CoalescePOC/actions/workflows/ci.yml/badge.svg)](https://github.com/BitanSarkar/CoalescePOC/actions/workflows/ci.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/net.bitsar/coalesce-spring-boot-starter)](https://central.sonatype.com/artifact/net.bitsar/coalesce-spring-boot-starter)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
+
 Distributed reactive call coalescing with stale-while-revalidate, for Spring WebFlux.
 
 Put `@Coalesce` on a `Mono`- or `Flux`-returning method and three things happen:
@@ -820,6 +825,22 @@ rather than quietly falling back to a scanned bean.
 Declare a bean of the interface type and the auto-configuration backs off. Every pod in a
 cluster must agree: two pods with different codecs or key conventions will not coalesce with
 each other, they will just quietly duplicate work.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request against it.
+It builds both modules and runs the whole suite against a Redis service container, then
+writes a per-suite table to the run summary — because "BUILD SUCCESSFUL" alone cannot tell a
+run where the Redis-gated integration tests executed from one where they all skipped, and
+those are the only tests that prove coalescing works.
+
+It also publishes the starter to a staging directory and asserts the generated POM still
+carries `name`, `description`, `url`, `licenses`, `developers` and `scm`. Maven Central
+rejects a POM missing any of them, and discovering that mid-release means burning a version
+number.
+
+CI holds no credentials and has read-only permissions; publishing lives entirely in the
+release workflow.
 
 ### Building and releasing
 
