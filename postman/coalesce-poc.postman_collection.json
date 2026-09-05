@@ -1,0 +1,206 @@
+{
+  "info": {
+    "name": "@Coalesce POC \u2014 with vs without",
+    "description": "A/B load test for the @Coalesce framework.\n\nHOW TO RUN\n1. Start the app and Redis, then send '00 Reset metrics' once.\n2. Collection Runner -> select the folder 'A - WITHOUT coalescing'.\n   Iterations: 200+, and raise the runner's concurrency if available.\n3. Run the folder 'B - WITH coalescing' with the SAME iteration count.\n   Equal request counts is what makes the comparison fair.\n4. Send '99 Report' and read the console output.\n\nNewman:\n  newman run postman/coalesce-poc.postman_collection.json \\\n    --folder 'A - WITHOUT coalescing' -n 200\n  newman run postman/coalesce-poc.postman_collection.json \\\n    --folder 'B - WITH coalescing' -n 200\n  newman run postman/coalesce-poc.postman_collection.json --folder Report\n\nBoth folders hit the same endpoint with the same work behind it; only the\n'coalesce' flag differs, so the gap in downstream executions is the saving.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "00 Reset metrics",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/api/stats/reset",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "api",
+            "stats",
+            "reset"
+          ]
+        },
+        "description": "Zero every counter. Send this once before an A/B run."
+      }
+    },
+    {
+      "name": "A - WITHOUT coalescing",
+      "description": "Baseline: every request reaches the downstream. Run with N iterations.",
+      "item": [
+        {
+          "name": "GET orders (coalesce=false)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/orders/{{bucket}}?coalesce=false",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "orders",
+                "{{bucket}}"
+              ],
+              "query": [
+                {
+                  "key": "coalesce",
+                  "value": "false"
+                }
+              ]
+            },
+            "description": "Bypasses @Coalesce entirely. Executions will equal requests."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Ten distinct keys. Under concurrency many virtual users land on the same bucket,",
+                  "// which is exactly the collision coalescing is meant to collapse.",
+                  "pm.variables.set('bucket', Math.floor(Math.random() * 10) + 1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 503 is expected for roughly 5% of calls: the downstream's slow tail.",
+                  "pm.test('200 or 503 (slow-tail failure)', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('returns bucket-many orders', function () {",
+                  "        pm.expect(pm.response.json().length).to.eql(Number(pm.variables.get('bucket')));",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "B - WITH coalescing",
+      "description": "Same endpoint and same downstream, through @Coalesce. Use the SAME N.",
+      "item": [
+        {
+          "name": "GET orders (coalesce=true)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/orders/{{bucket}}?coalesce=true",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "orders",
+                "{{bucket}}"
+              ],
+              "query": [
+                {
+                  "key": "coalesce",
+                  "value": "true"
+                }
+              ]
+            },
+            "description": "Concurrent callers on one bucket share a single execution; results are then cached for freshTtl (2s) and refreshed in the background while stale."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Ten distinct keys. Under concurrency many virtual users land on the same bucket,",
+                  "// which is exactly the collision coalescing is meant to collapse.",
+                  "pm.variables.set('bucket', Math.floor(Math.random() * 10) + 1);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 503 is expected for roughly 5% of calls: the downstream's slow tail.",
+                  "pm.test('200 or 503 (slow-tail failure)', function () {",
+                  "    pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "    pm.test('returns bucket-many orders', function () {",
+                  "        pm.expect(pm.response.json().length).to.eql(Number(pm.variables.get('bucket')));",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Report",
+      "item": [
+        {
+          "name": "99 Report",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/stats",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "stats"
+              ]
+            },
+            "description": "Side-by-side comparison. Read the Postman console for the summary table."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const s = pm.response.json();",
+                  "const d = s.direct, c = s.coalesced, cmp = s.comparison;",
+                  "console.log('');",
+                  "console.log('================ DOWNSTREAM LOAD ================');",
+                  "console.log('                     requests   executions  saved');",
+                  "console.log('  without coalesce   ' + String(d.requests).padEnd(11) + String(d.downstreamExecutions).padEnd(12) + d.executionsSaved);",
+                  "console.log('  with coalesce      ' + String(c.requests).padEnd(11) + String(c.downstreamExecutions).padEnd(12) + c.executionsSaved);",
+                  "console.log('');",
+                  "console.log('  downstream load reduction : ' + cmp.downstreamLoadReductionPercent + '%');",
+                  "console.log('  executions per request    : ' + cmp.directExecutionsPerRequest + ' -> ' + cmp.coalescedExecutionsPerRequest + ' (' + cmp.timesFewerExecutions + ' fewer)');",
+                  "console.log('  mean latency              : ' + cmp.meanLatencyDirectMillis + 'ms -> ' + cmp.meanLatencyCoalescedMillis + 'ms');",
+                  "console.log('  framework                 : leader=' + s.framework.leaderExecutions + ' cacheHits=' + s.framework.cacheHits + ' waits=' + s.framework.followerWaits);",
+                  "console.log('================================================');",
+                  "pm.test('coalescing reduced downstream executions', function () {",
+                  "    pm.expect(c.downstreamExecutions).to.be.below(c.requests);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

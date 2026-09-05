@@ -21,23 +21,21 @@ public class OpenApiConfig {
                                 Distributed reactive call coalescing with stale-while-revalidate, \
                                 backed by Redis via Redisson.
 
-                                Concurrent callers of an annotated method share a single execution \
-                                cluster-wide: one caller wins a Redis lock and executes, the rest wait \
-                                on a pub/sub wake-up and read the leader's cached result. Once the \
-                                result passes `freshTtlSeconds` it is still served instantly while a \
-                                single background refresh runs.
+                                One endpoint, two modes. GET /api/orders/{bucket} fetches a random \
+                                list of orders from a deliberately slow downstream (normally \
+                                distributed service time, with the slowest ~5% failing). The \
+                                `coalesce` flag decides whether the call goes through @Coalesce or \
+                                straight to the downstream.
 
-                                The endpoints below drive a deliberately slow (~400ms) fake downstream \
-                                so the effect is visible: fire many concurrent requests at the same \
-                                order id and watch `downstreamExecutions` in /coalesce/stats stay at 1.
+                                Run load against both modes and read GET /api/stats: `direct` \
+                                executes the downstream once per request by definition, so the gap \
+                                between the two is exactly the work coalescing saved.
                                 """)
                         .license(new License().name("POC — not for production use")))
                 .tags(List.of(
                         new Tag().name("Orders")
-                                .description("Coalesced reads against a slow fake downstream"),
-                        new Tag().name("Coalesce control")
-                                .description("Counters and fault injection for exercising the framework"),
-                        new Tag().name("Echo")
-                                .description("Plain WebFlux endpoints, no coalescing")));
+                                .description("The single endpoint under test"),
+                        new Tag().name("Metrics")
+                                .description("Side-by-side comparison of the two modes")));
     }
 }

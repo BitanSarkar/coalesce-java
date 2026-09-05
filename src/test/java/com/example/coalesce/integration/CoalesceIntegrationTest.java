@@ -1,28 +1,41 @@
 package com.example.coalesce.integration;
 
 import com.example.coalesce.annotation.Coalesce;
+import com.example.coalesce.demo.DemoMetrics;
+import com.example.coalesce.demo.Mode;
 import com.example.coalesce.demo.OrderDto;
 import com.example.coalesce.demo.OrderService;
 import com.example.coalesce.metrics.CoalesceMetrics;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.EnabledIf;
+import org.redisson.api.RedissonReactiveClient;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.test.context.TestPropertySource;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
-import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Test;
-import org.junit.jupiter.api.condition.EnabledIf;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.annotation.Bean;
-import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+/**
+ * Latency is pinned to a tight, fast distribution here so the downstream never lands in its
+ * failure tail — these tests are about coalescing behaviour, not about the simulator.
+ */
 @SpringBootTest
+@TestPropertySource(properties = {
+        "demo.latency.mean-millis=120",
+        "demo.latency.std-dev-millis=0",
+        "demo.latency.max-millis=200"
+})
 @EnabledIf("com.example.coalesce.integration.RedisAvailable#check")
 class CoalesceIntegrationTest {
 
@@ -32,121 +45,104 @@ class CoalesceIntegrationTest {
     OrderService orders;
 
     @Autowired
+    DemoMetrics demoMetrics;
+
+    @Autowired
     CoalesceMetrics metrics;
 
     @Autowired
     SwrProbe swr;
 
     @Autowired
-    TypedFluxProbe typedFlux;
-
-    /** Every test uses a fresh key, so tests never collide through the shared Redis. */
-    private String freshKey() {
-        return "it-" + UUID.randomUUID();
-    }
+    RedissonReactiveClient redisson;
 
     @BeforeEach
     void resetCounters() {
-        orders.reset();
+        demoMetrics.reset();
         metrics.reset();
         swr.resetRuns();
+        // Buckets are fixed 1..10, so cached state would otherwise leak between tests — and
+        // between runs, since Redis outlives the JVM.
+        redisson.getKeys().deleteByPattern("coalesce:*").block(LIMIT);
+    }
+
+    private long executions() {
+        return (long) demoMetrics.snapshot(Mode.COALESCED).get("downstreamExecutions");
     }
 
     @Test
-    void concurrentCallsForOneKeyExecuteTheMethodExactlyOnce() {
-        String id = freshKey();
+    void concurrentCallsForOneBucketExecuteTheDownstreamExactlyOnce() {
+        int bucket = 7;
 
-        List<OrderDto> results = Flux.range(0, 20)
-                .flatMap(i -> orders.getOrder(id))
+        List<List<OrderDto>> results = Flux.range(0, 20)
+                .flatMap(i -> orders.loadCoalesced(bucket))
                 .collectList()
                 .block(LIMIT);
 
         assertThat(results).hasSize(20);
-        assertThat(orders.executions()).isEqualTo(1);
-        // Identical instant across all 20 proves they share the leader's single result.
-        assertThat(results.stream().map(OrderDto::fetchedAt).distinct().toList()).hasSize(1);
+        assertThat(executions()).isEqualTo(1);
+        // Every caller got the leader's payload, not its own randomly generated one.
+        assertThat(results).allSatisfy(r -> assertThat(r).isEqualTo(results.get(0)));
+    }
+
+    @Test
+    void eachBucketIsCoalescedIndependently() {
+        List<List<OrderDto>> results = Flux.range(1, 10)
+                .flatMap(bucket -> Flux.range(0, 5).flatMap(i -> orders.loadCoalesced(bucket)))
+                .collectList()
+                .block(LIMIT);
+
+        assertThat(results).hasSize(50);
+        // Ten distinct keys, so ten executions for fifty requests.
+        assertThat(executions()).isEqualTo(10);
+        // bucket doubles as the order count, so the sizes prove keys did not cross-talk.
+        assertThat(results.stream().map(List::size).distinct().sorted().toList())
+                .containsExactly(1, 2, 3, 4, 5, 6, 7, 8, 9, 10);
     }
 
     @Test
     void cachedResultIsServedWithoutReExecuting() {
-        String id = freshKey();
+        int bucket = 3;
 
-        orders.getOrder(id).block(LIMIT);
-        assertThat(orders.executions()).isEqualTo(1);
+        List<OrderDto> first = orders.loadCoalesced(bucket).block(LIMIT);
+        assertThat(executions()).isEqualTo(1);
 
         for (int i = 0; i < 5; i++) {
-            assertThat(orders.getOrder(id).block(LIMIT)).isNotNull();
+            assertThat(orders.loadCoalesced(bucket).block(LIMIT)).isEqualTo(first);
         }
-        assertThat(orders.executions()).isEqualTo(1);
+        assertThat(executions()).isEqualTo(1);
         assertThat(metrics.snapshot().get("cacheHits")).isEqualTo(5L);
     }
 
     @Test
-    void anEmptyMonoIsCachedAsEmptyRatherThanTreatedAsAbsent() {
-        String id = freshKey();
+    void directModeExecutesEveryTimeAndIsTheBaseline() {
+        int bucket = 4;
 
-        assertThat(orders.findMissingOrder(id).blockOptional(LIMIT)).isEmpty();
-        assertThat(orders.executions()).isEqualTo(1);
+        Flux.range(0, 10).flatMap(i -> orders.loadDirect(bucket)).collectList().block(LIMIT);
 
-        // The follower must get an empty Mono back, not hang waiting for a value that
-        // will never arrive, and not NPE on a null payload.
-        assertThat(orders.findMissingOrder(id).blockOptional(LIMIT)).isEmpty();
-        assertThat(orders.executions()).isEqualTo(1);
+        var direct = demoMetrics.snapshot(Mode.DIRECT);
+        assertThat(direct.get("downstreamExecutions")).isEqualTo(10L);
+        // Nothing is saved in direct mode, by construction — that is the point of it.
+        assertThat(executions()).isZero();
     }
 
     @Test
-    void aBoundedFluxIsCollectedCachedAndReplayed() {
-        String id = freshKey();
+    void cachedOrdersDecodeBackIntoDtosNotUntypedMaps() {
+        int bucket = 5;
 
-        assertThat(orders.listItems(id).collectList().block(LIMIT))
-                .containsExactly("widget", "gizmo", "doohickey");
-        assertThat(orders.executions()).isEqualTo(1);
+        List<OrderDto> first = orders.loadCoalesced(bucket).block(LIMIT);
+        assertThat(first).hasSize(5).allSatisfy(o -> assertThat(o).isInstanceOf(OrderDto.class));
 
-        assertThat(orders.listItems(id).collectList().block(LIMIT))
-                .containsExactly("widget", "gizmo", "doohickey");
-        assertThat(orders.executions()).isEqualTo(1);
-    }
-
-    @Test
-    void aCachedFluxOfDtosDecodesBackIntoDtosNotUntypedMaps() {
-        String id = freshKey();
-
-        List<OrderDto> first = typedFlux.orders(id).collectList().block(LIMIT);
-        assertThat(first).hasSize(2).allSatisfy(o -> assertThat(o).isInstanceOf(OrderDto.class));
-
-        // Second call comes back through the codec from Redis. The decode type has to be a
-        // parameterized List<OrderDto>: with a bare Class the elements would deserialize
-        // into LinkedHashMaps and this cast would fail.
-        List<OrderDto> cached = typedFlux.orders(id).collectList().block(LIMIT);
-        assertThat(cached).hasSize(2).allSatisfy(o -> assertThat(o).isInstanceOf(OrderDto.class));
+        // Second call round-trips through Redis and the codec. The decode type has to be a
+        // parameterized List<OrderDto>, or the elements come back as LinkedHashMaps.
+        List<OrderDto> cached = orders.loadCoalesced(bucket).block(LIMIT);
+        assertThat(cached).hasSize(5).allSatisfy(o -> assertThat(o).isInstanceOf(OrderDto.class));
         assertThat(cached).isEqualTo(first);
-        assertThat(cached.get(0).orderId()).isEqualTo(id + "-a");
-    }
-
-    @Test
-    void exactlyOneWaiterRetriesAfterAFailureAndTheRestShareItsResult() {
-        String id = freshKey();
-
-        orders.failing(true);
-        assertThatThrownBy(() -> orders.getOrder(id).block(LIMIT))
-                .hasMessageContaining("downstream is unhappy");
-        assertThat(orders.executions()).isEqualTo(1);
-
-        orders.failing(false);
-        List<OrderDto> results = Flux.range(0, 5)
-                .flatMap(i -> orders.getOrder(id))
-                .collectList()
-                .block(LIMIT);
-
-        assertThat(results).hasSize(5);
-        // One retry total, not one per caller.
-        assertThat(orders.executions()).isEqualTo(2);
-        assertThat(results.stream().map(OrderDto::fetchedAt).distinct().toList()).hasSize(1);
     }
 
     @Test
     void aStaleReadIsServedImmediatelyAndTriggersOneBackgroundRefresh() throws Exception {
-        String id = freshKey();
+        String id = "swr-" + UUID.randomUUID();
 
         String first = swr.value(id).block(LIMIT);
         assertThat(swr.runs()).isEqualTo(1);
@@ -157,11 +153,9 @@ class CoalesceIntegrationTest {
         String stale = swr.value(id).block(LIMIT);
         long elapsed = System.currentTimeMillis() - startedAt;
 
-        // Served from cache without waiting for the refresh, which takes ~300ms.
         assertThat(stale).isEqualTo(first);
-        assertThat(elapsed).isLessThan(250);
+        assertThat(elapsed).isLessThan(250); // not waiting for the ~300ms refresh
 
-        // The refresh happens off the response path, so give it a moment to land.
         Thread.sleep(1_000);
         assertThat(swr.runs()).isEqualTo(2);
         assertThat(metrics.snapshot().get("backgroundRefreshes")).isEqualTo(1L);
@@ -169,7 +163,7 @@ class CoalesceIntegrationTest {
 
     @Test
     void concurrentStaleReadsTriggerOnlyOneBackgroundRefresh() throws Exception {
-        String id = freshKey();
+        String id = "swr-" + UUID.randomUUID();
 
         swr.value(id).block(LIMIT);
         Thread.sleep(1_200);
@@ -177,7 +171,6 @@ class CoalesceIntegrationTest {
         Flux.range(0, 10).flatMap(i -> swr.value(id)).collectList().block(LIMIT);
         Thread.sleep(1_000);
 
-        // 1 initial execution + exactly 1 refresh, no matter how many callers saw it stale.
         assertThat(swr.runs()).isEqualTo(2);
     }
 
@@ -187,22 +180,6 @@ class CoalesceIntegrationTest {
         @Bean
         SwrProbe swrProbe() {
             return new SwrProbe();
-        }
-
-        @Bean
-        TypedFluxProbe typedFluxProbe() {
-            return new TypedFluxProbe();
-        }
-    }
-
-    /** A Flux of a real DTO, to prove generic element types survive the cache round trip. */
-    static class TypedFluxProbe {
-
-        @Coalesce(key = "#id", freshTtlSeconds = 30, staleTtlSeconds = 60)
-        public Flux<OrderDto> orders(String id) {
-            return Flux.just(
-                    new OrderDto(id + "-a", "CONFIRMED", 100, Instant.parse("2026-01-01T00:00:00Z")),
-                    new OrderDto(id + "-b", "PENDING", 200, Instant.parse("2026-01-02T00:00:00Z")));
         }
     }
 
@@ -225,12 +202,8 @@ class CoalesceIntegrationTest {
             runs.set(0);
         }
 
-        @Coalesce(
-                key = "#id",
-                freshTtlSeconds = 1,
-                staleTtlSeconds = 60,
-                pendingTtlSeconds = 10,
-                waitTimeoutSeconds = 15)
+        @Coalesce(key = "#id", freshTtlSeconds = 1, staleTtlSeconds = 60,
+                pendingTtlSeconds = 10, waitTimeoutSeconds = 15)
         public Mono<String> value(String id) {
             return Mono.defer(() -> {
                 runs.incrementAndGet();

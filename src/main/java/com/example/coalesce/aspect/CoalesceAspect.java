@@ -109,7 +109,8 @@ public class CoalesceAspect {
         }
 
         // Stale: kick a refresh off the response path. This caller does not wait for it.
-        metrics.backgroundRefresh();
+        // Counting the refresh happens where the lock is actually won — most of these
+        // attempts lose the race to a refresh already in flight and quietly do nothing.
         acquireAndExecute(inv, true).subscribe(
                 v -> {
                 },
@@ -134,10 +135,17 @@ public class CoalesceAspect {
 
         return coordinator.tryAcquire(inv.key(), lockId, pendingTtl)
                 .flatMap(acquired -> acquired
-                        ? runAsLeader(inv, lockId, isRefresh)
+                        ? runRefreshAware(inv, lockId, isRefresh)
                         // Losing the race during a background refresh is a no-op, not a wait:
                         // someone else is already refreshing and this caller already has a response.
                         : (isRefresh ? Mono.empty() : awaitAsFollower(inv)));
+    }
+
+    private Mono<Object> runRefreshAware(Invocation inv, long lockId, boolean isRefresh) {
+        if (isRefresh) {
+            metrics.backgroundRefresh();
+        }
+        return runAsLeader(inv, lockId, isRefresh);
     }
 
     private Mono<Object> runAsLeader(Invocation inv, long lockId, boolean isRefresh) {

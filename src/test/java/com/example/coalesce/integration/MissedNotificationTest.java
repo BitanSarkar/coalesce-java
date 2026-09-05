@@ -1,11 +1,10 @@
 package com.example.coalesce.integration;
 
 import com.example.coalesce.coordinator.RedissonCoalesceCoordinator;
+import com.example.coalesce.demo.DemoMetrics;
+import com.example.coalesce.demo.Mode;
 import com.example.coalesce.demo.OrderDto;
 import com.example.coalesce.demo.OrderService;
-import java.time.Duration;
-import java.util.List;
-import java.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
 import org.redisson.api.RedissonReactiveClient;
@@ -14,7 +13,11 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
+import org.springframework.test.context.TestPropertySource;
 import reactor.core.publisher.Flux;
+
+import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -23,30 +26,42 @@ import static org.assertj.core.api.Assertions.assertThat;
  * entirely, the jittered poll in the follower wait loop has to resolve the wait on its own.
  */
 @SpringBootTest
+@TestPropertySource(properties = {
+        "demo.latency.mean-millis=120",
+        "demo.latency.std-dev-millis=0",
+        "demo.latency.max-millis=200"
+})
 @EnabledIf("com.example.coalesce.integration.RedisAvailable#check")
 class MissedNotificationTest {
 
     @Autowired
     OrderService orders;
 
+    @Autowired
+    DemoMetrics demoMetrics;
+
+    @Autowired
+    RedissonReactiveClient redisson;
+
     @Test
     void followersStillResolveWhenEveryWakeUpIsLost() {
-        orders.reset();
-        String id = "missed-" + UUID.randomUUID();
+        demoMetrics.reset();
+        redisson.getKeys().deleteByPattern("coalesce:*").block(Duration.ofSeconds(10));
+        int bucket = 9;
 
         long startedAt = System.currentTimeMillis();
-        List<OrderDto> results = Flux.range(0, 8)
-                .flatMap(i -> orders.getOrder(id))
+        List<List<OrderDto>> results = Flux.range(0, 8)
+                .flatMap(i -> orders.loadCoalesced(bucket))
                 .collectList()
                 .block(Duration.ofSeconds(30));
         long elapsed = System.currentTimeMillis() - startedAt;
 
         assertThat(results).hasSize(8);
-        assertThat(orders.executions()).isEqualTo(1);
-        assertThat(results.stream().map(OrderDto::fetchedAt).distinct().toList()).hasSize(1);
+        assertThat(demoMetrics.snapshot(Mode.COALESCED).get("downstreamExecutions")).isEqualTo(1L);
+        assertThat(results).allSatisfy(r -> assertThat(r).isEqualTo(results.get(0)));
 
-        // The downstream takes ~400ms; polling adds at most a poll interval or two on top.
-        // The point is that it resolves well inside waitTimeoutSeconds rather than hanging.
+        // Polling adds at most an interval or two on top of the ~120ms downstream. The point
+        // is that it resolves well inside waitTimeoutSeconds rather than hanging.
         assertThat(elapsed).isLessThan(3_000);
     }
 
