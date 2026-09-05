@@ -23,6 +23,7 @@ import org.aspectj.lang.annotation.Aspect;
 import org.aspectj.lang.reflect.MethodSignature;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ResolvableType;
 import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Component;
@@ -44,14 +45,24 @@ public class CoalesceAspect {
     private final CoalesceMetrics metrics;
     private final CoalesceKeyResolver keyResolver;
 
+    /**
+     * Refuse to cache anything larger than this. Redisson buffers each command in Netty's
+     * direct arena before writing it, so a handful of oversized entries in flight can
+     * exhaust MaxDirectMemorySize and take the process down — the payload never reaches
+     * Redis, it dies in the encoder.
+     */
+    private final int maxPayloadBytes;
+
     public CoalesceAspect(RedissonCoalesceCoordinator coordinator,
                           CoalesceCodec codec,
                           CoalesceMetrics metrics,
-                          CoalesceKeyResolver keyResolver) {
+                          CoalesceKeyResolver keyResolver,
+                          @Value("${coalesce.max-payload-bytes:1048576}") int maxPayloadBytes) {
         this.coordinator = coordinator;
         this.codec = codec;
         this.metrics = metrics;
         this.keyResolver = keyResolver;
+        this.maxPayloadBytes = maxPayloadBytes;
     }
 
     /** One annotated call: everything the reactive chain below needs, resolved once. */
@@ -157,6 +168,15 @@ public class CoalesceAspect {
                 .defaultIfEmpty(Optional.empty()) // force a signal even for an empty Mono
                 .flatMap(opt -> {
                     byte[] payload = opt.map(codec::encode).orElse(EMPTY_MARKER);
+                    if (payload.length > maxPayloadBytes) {
+                        // Serve this caller, but do not put it in Redis. Caching it would
+                        // risk the whole process for an entry that is too big to be worth
+                        // sharing anyway.
+                        metrics.payloadTooLarge();
+                        log.warn("not caching {}: payload is {} bytes, over the {} byte limit",
+                                inv.key(), payload.length, maxPayloadBytes);
+                        return Mono.just(opt);
+                    }
                     return coordinator.markDone(inv.key(), payload, ttl).thenReturn(opt);
                 })
                 .flatMap(Mono::justOrEmpty) // unwrap; an empty result stays an empty Mono

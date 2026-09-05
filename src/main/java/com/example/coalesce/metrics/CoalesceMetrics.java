@@ -18,6 +18,7 @@ public class CoalesceMetrics {
     private final AtomicLong failedRetries = new AtomicLong();
     private final AtomicLong leaderTakeovers = new AtomicLong();
     private final AtomicLong timeouts = new AtomicLong();
+    private final AtomicLong payloadsTooLarge = new AtomicLong();
     private final AtomicLong followerWaitMillisTotal = new AtomicLong();
 
     public void leaderExecution() {
@@ -50,6 +51,11 @@ public class CoalesceMetrics {
         timeouts.incrementAndGet();
     }
 
+    /** A result was computed but deliberately not cached because it was too big. */
+    public void payloadTooLarge() {
+        payloadsTooLarge.incrementAndGet();
+    }
+
     public Map<String, Long> snapshot() {
         long waits = followerWaits.get();
         return Map.of(
@@ -60,6 +66,7 @@ public class CoalesceMetrics {
                 "failedRetries", failedRetries.get(),
                 "leaderTakeovers", leaderTakeovers.get(),
                 "timeouts", timeouts.get(),
+                "payloadsTooLarge", payloadsTooLarge.get(),
                 "meanFollowerWaitMillis", waits == 0 ? 0 : followerWaitMillisTotal.get() / waits);
     }
 
@@ -71,6 +78,7 @@ public class CoalesceMetrics {
         failedRetries.set(0);
         leaderTakeovers.set(0);
         timeouts.set(0);
+        payloadsTooLarge.set(0);
         followerWaitMillisTotal.set(0);
     }
 }

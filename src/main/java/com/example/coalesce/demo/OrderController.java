@@ -22,7 +22,7 @@ import java.util.Map;
 public class OrderController {
 
     private static final int MIN_BUCKET = 1;
-    private static final int MAX_BUCKET = 10;
+    private static final int MAX_BUCKET = 1000000;
 
     private final OrderService orders;
     private final DemoMetrics demoMetrics;

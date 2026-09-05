@@ -36,6 +36,7 @@ public class SimulatedOrderSource {
     private static final String[] CUSTOMERS = {"acme", "globex", "initech", "umbrella", "hooli"};
     private static final String[] STATUSES = {"CONFIRMED", "PENDING", "SHIPPED", "CANCELLED"};
 
+    private final int maxOrders;
     private final long meanMillis;
     private final long stdDevMillis;
     private final long maxMillis;
@@ -43,10 +44,12 @@ public class SimulatedOrderSource {
     private final DemoMetrics metrics;
 
     public SimulatedOrderSource(
+            @Value("${demo.max-orders:25}") int maxOrders,
             @Value("${demo.latency.mean-millis:300}") long meanMillis,
             @Value("${demo.latency.std-dev-millis:80}") long stdDevMillis,
             @Value("${demo.latency.max-millis:2000}") long maxMillis,
             DemoMetrics metrics) {
+        this.maxOrders = maxOrders;
         this.meanMillis = meanMillis;
         this.stdDevMillis = stdDevMillis;
         this.maxMillis = maxMillis;
@@ -76,11 +79,19 @@ public class SimulatedOrderSource {
         }).subscribeOn(Schedulers.boundedElastic());
     }
 
-    /** {@code bucket} doubles as the order count, so each bucket has a distinct payload. */
+    /**
+     * {@code bucket} sets the order count so each bucket has a distinct payload, but the
+     * count is capped independently of the bucket range.
+     *
+     * <p>Without that cap, widening the bucket range to raise key cardinality also inflates
+     * every response: bucket 964,900 meant 964,900 orders, ~127MB of JSON per entry, which
+     * exhausted Netty's direct buffer arena on the way into Redis.
+     */
     private List<OrderDto> generate(int bucket) {
         ThreadLocalRandom random = ThreadLocalRandom.current();
-        List<OrderDto> orders = new ArrayList<>(bucket);
-        for (int i = 0; i < bucket; i++) {
+        int count = Math.min(bucket, maxOrders);
+        List<OrderDto> orders = new ArrayList<>(count);
+        for (int i = 0; i < count; i++) {
             orders.add(new OrderDto(
                     "ORD-%d-%04d".formatted(bucket, random.nextInt(10_000)),
                     CUSTOMERS[random.nextInt(CUSTOMERS.length)],
