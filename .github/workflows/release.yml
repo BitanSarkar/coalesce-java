@@ -255,13 +255,30 @@ jobs:
           ```bash
           ./gradlew -p consumer-check test -PcoalesceVersion=__VERSION__
           ```
+
+          __CHANGELOG__
           NOTES
+
+          # GitHub's own --generate-notes lists merged pull requests. Work here lands
+          # directly on main, so it finds none and produces a bare compare link -- which is
+          # all the 0.1.2 release got. Build the changelog from the commits instead.
+          PREV=$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo "")
+          if [ -n "$PREV" ]; then
+            echo "Changelog from ${PREV} to ${TAG}"
+            python3 .github/scripts/changelog.py --from "$PREV" --to "$TAG" > /tmp/changelog.md
+          else
+            echo "No earlier tag; changelog covers the whole history"
+            python3 .github/scripts/changelog.py --to "$TAG" > /tmp/changelog.md
+          fi
 
           # Not `sed -i`: its in-place flag differs between GNU and BSD, and writing to a
           # second file works identically on both, so this stays testable off the runner.
+          # The changelog is substituted with `r` (read file) rather than `s`, so its own
+          # backslashes and ampersands are never interpreted as replacement syntax.
           sed -e "s|__VERSION__|${VERSION}|g" \
               -e "s|__DEPLOYMENT_ID__|${DEPLOYMENT_ID}|g" \
               -e "s|__RUN_ID__|${GITHUB_RUN_ID}|g" \
+              -e "/__CHANGELOG__/{r /tmp/changelog.md" -e "d;}" \
               /tmp/release-notes.tmpl > /tmp/release-notes.md
 
           # A version with a suffix (0.2.0-rc1, 1.0.0-beta2) is a prerelease.
