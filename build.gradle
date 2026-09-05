@@ -1,0 +1,41 @@
+plugins {
+    id 'java'
+    id 'org.springframework.boot' version '3.5.16'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+group = 'com.example'
+version = '0.0.1-SNAPSHOT'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(17)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Brings in spring-webflux + Reactor Netty (the default reactive server).
+    implementation 'org.springframework.boot:spring-boot-starter-webflux'
+
+    // Spring AOP — required for @Aspect interception of @Coalesce.
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+
+    // Redisson standalone (reactive API ships in the same artifact). Deliberately NOT
+    // the Spring Boot starter: the coalescing framework owns its own RedissonClient
+    // config (codec, read mode) and does not want spring-data-redis auto-configuration.
+    implementation 'org.redisson:redisson:3.52.0'
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // OpenAPI 3 + Swagger UI. The 2.x line is the one that targets Spring Boot 3.
+    implementation 'org.springdoc:springdoc-openapi-starter-webflux-ui:2.9.0'
+
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'io.projectreactor:reactor-test'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}

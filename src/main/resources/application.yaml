@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: echo
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+server:
+  port: 8080
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+    display-request-duration: true
+  api-docs:
+    path: /v3/api-docs
+
+logging:
+  level:
+    org.springframework.web: INFO

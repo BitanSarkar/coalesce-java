@@ -1,0 +1,21 @@
+{
+    "java.configuration.updateBuildConfiguration": "automatic",
+    "java.configuration.runtimes": [
+        {
+            "name": "JavaSE-17",
+            "path": "/Users/bitansarkar/.sdkman/candidates/java/17.0.11-tem",
+            "default": true
+        },
+        {
+            "name": "JavaSE-21",
+            "path": "/Users/bitansarkar/.sdkman/candidates/java/21.0.3-tem"
+        },
+        {
+            "name": "JavaSE-11",
+            "path": "/Users/bitansarkar/.sdkman/candidates/java/11.0.23-tem"
+        }
+    ],
+    "java.import.gradle.java.home": "/Users/bitansarkar/.sdkman/candidates/java/21.0.3-tem",
+    "java.compile.nullAnalysis.mode": "automatic",
+    "java.debug.settings.onBuildFailureProceed": true
+}
