@@ -1,13 +1,23 @@
 {
   "info": {
     "name": "@Coalesce POC \u2014 with vs without",
-    "description": "A/B load test for the @Coalesce framework.\n\nHOW TO RUN\n1. Start the app and Redis, then send '00 Reset metrics' once.\n2. Collection Runner -> select the folder 'A - WITHOUT coalescing'.\n   Iterations: 200+, and raise the runner's concurrency if available.\n3. Run the folder 'B - WITH coalescing' with the SAME iteration count.\n   Equal request counts is what makes the comparison fair.\n4. Send '99 Report' and read the console output.\n\nNewman:\n  newman run postman/coalesce-poc.postman_collection.json \\\n    --folder 'A - WITHOUT coalescing' -n 200\n  newman run postman/coalesce-poc.postman_collection.json \\\n    --folder 'B - WITH coalescing' -n 200\n  newman run postman/coalesce-poc.postman_collection.json --folder Report\n\nBoth folders hit the same endpoint with the same work behind it; only the\n'coalesce' flag differs, so the gap in downstream executions is the saving.",
+    "description": "A/B load test for the @Coalesce framework.\n\nHOW TO RUN\n1. Start the app and Redis, then send '00 Reset metrics' once.\n2. Collection Runner -> select the folder 'A - WITHOUT coalescing'.\n   Iterations: 200+, and raise the runner's concurrency if available.\n3. Run the folder 'B - WITH coalescing' with the SAME iteration count.\n   Equal request counts is what makes the comparison fair.\n4. Send '99 Report' and read the console output.\n\nNewman:\n  newman run postman/coalesce-poc.postman_collection.json \\\n    --folder 'A - WITHOUT coalescing' -n 200\n  newman run postman/coalesce-poc.postman_collection.json \\\n    --folder 'B - WITH coalescing' -n 200\n  newman run postman/coalesce-poc.postman_collection.json --folder Report\n\nBoth folders hit the same endpoint with the same work behind it; only the\n'coalesce' flag differs, so the gap in downstream executions is the saving.\n\nVARIABLES\n  keyCount  distinct coalescing keys the load spreads over (default 10).\n            Raise it to model high-cardinality traffic; the saving falls off fast\n            once requests-per-key-per-freshTtl drops near 1.\n  maxOrders must match demo.max-orders in application.yaml (default 25). The server\n            caps response size independently of the bucket range, so the length\n            assertion expects min(bucket, maxOrders).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "baseUrl",
       "value": "http://localhost:8080",
+      "type": "string"
+    },
+    {
+      "key": "keyCount",
+      "value": "10",
+      "type": "string"
+    },
+    {
+      "key": "maxOrders",
+      "value": "25",
       "type": "string"
     }
   ],
@@ -65,9 +75,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Ten distinct keys. Under concurrency many virtual users land on the same bucket,",
-                  "// which is exactly the collision coalescing is meant to collapse.",
-                  "pm.variables.set('bucket', Math.floor(Math.random() * 10) + 1);"
+                  "// How many distinct coalescing keys the load spreads over. Low values mean many",
+                  "// virtual users collide on one key, which is what coalescing collapses. Raise it to",
+                  "// model high-cardinality traffic, where there is nothing to share and the saving",
+                  "// collapses with it.",
+                  "const keyCount = Number(pm.collectionVariables.get('keyCount')) || 10;",
+                  "pm.variables.set('bucket', Math.floor(Math.random() * keyCount) + 1);"
                 ]
               }
             },
@@ -81,8 +94,13 @@
                   "    pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
                   "});",
                   "if (pm.response.code === 200) {",
-                  "    pm.test('returns bucket-many orders', function () {",
-                  "        pm.expect(pm.response.json().length).to.eql(Number(pm.variables.get('bucket')));",
+                  "    // The server caps the order count at demo.max-orders, independently of the bucket",
+                  "    // range, so the expected length is min(bucket, maxOrders) rather than bucket.",
+                  "    // Keep maxOrders here in step with demo.max-orders in application.yaml.",
+                  "    pm.test('returns min(bucket, maxOrders) orders', function () {",
+                  "        const bucket = Number(pm.variables.get('bucket'));",
+                  "        const maxOrders = Number(pm.collectionVariables.get('maxOrders')) || 25;",
+                  "        pm.expect(pm.response.json().length).to.eql(Math.min(bucket, maxOrders));",
                   "    });",
                   "}"
                 ]
@@ -126,9 +144,12 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Ten distinct keys. Under concurrency many virtual users land on the same bucket,",
-                  "// which is exactly the collision coalescing is meant to collapse.",
-                  "pm.variables.set('bucket', Math.floor(Math.random() * 10) + 1);"
+                  "// How many distinct coalescing keys the load spreads over. Low values mean many",
+                  "// virtual users collide on one key, which is what coalescing collapses. Raise it to",
+                  "// model high-cardinality traffic, where there is nothing to share and the saving",
+                  "// collapses with it.",
+                  "const keyCount = Number(pm.collectionVariables.get('keyCount')) || 10;",
+                  "pm.variables.set('bucket', Math.floor(Math.random() * keyCount) + 1);"
                 ]
               }
             },
@@ -142,8 +163,13 @@
                   "    pm.expect(pm.response.code).to.be.oneOf([200, 503]);",
                   "});",
                   "if (pm.response.code === 200) {",
-                  "    pm.test('returns bucket-many orders', function () {",
-                  "        pm.expect(pm.response.json().length).to.eql(Number(pm.variables.get('bucket')));",
+                  "    // The server caps the order count at demo.max-orders, independently of the bucket",
+                  "    // range, so the expected length is min(bucket, maxOrders) rather than bucket.",
+                  "    // Keep maxOrders here in step with demo.max-orders in application.yaml.",
+                  "    pm.test('returns min(bucket, maxOrders) orders', function () {",
+                  "        const bucket = Number(pm.variables.get('bucket'));",
+                  "        const maxOrders = Number(pm.collectionVariables.get('maxOrders')) || 25;",
+                  "        pm.expect(pm.response.json().length).to.eql(Math.min(bucket, maxOrders));",
                   "    });",
                   "}"
                 ]
