@@ -155,9 +155,11 @@ tasks.register('centralBundle', Zip) {
     destinationDirectory = layout.buildDirectory
 
     doFirst {
-        if (project.version.toString().endsWith('-SNAPSHOT')) {
+        if (!(project.version.toString() ==~ /\d+\.\d+\.\d+/)) {
             throw new GradleException(
-                    "Maven Central rejects snapshots; set a release version in gradle.properties (currently ${project.version})")
+                    "Maven Central needs a MAJOR.MINOR.PATCH version and this build has ${project.version}. " +
+                            'The published version comes from the release tag, not from gradle.properties, so pass ' +
+                            'it explicitly: ./gradlew -Pversion=1.2.3 :coalesce-spring-boot-starter:centralBundle')
         }
         if (tasks.withType(Sign).every { it.enabled && it.signatures.isEmpty() }) {
             throw new GradleException(
