@@ -21,12 +21,14 @@ class CoalesceKeyResolverTest {
 
     @SuppressWarnings("unused")
     static class Sample {
-        @Coalesce(key = "#orderId", headerKeys = {"X-Tenant-Id", "X-Region"})
+        // Both carry the same explicit namespace so these two differ in header order and
+        // nothing else, which is the only thing the ordering test is about.
+        @Coalesce(key = "#orderId", namespace = "orders", headerKeys = {"X-Tenant-Id", "X-Region"})
         Mono<String> withHeaders(String orderId) {
             return Mono.empty();
         }
 
-        @Coalesce(key = "#orderId", headerKeys = {"X-Region", "X-Tenant-Id"})
+        @Coalesce(key = "#orderId", namespace = "orders", headerKeys = {"X-Region", "X-Tenant-Id"})
         Mono<String> withHeadersReversed(String orderId) {
             return Mono.empty();
         }
@@ -63,7 +65,7 @@ class CoalesceKeyResolverTest {
         headers.add("X-Region", "eu-west-1");
 
         String forward = resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, attributes("withHeaders"), headers);
-        String reversed = resolver.resolve(method("withHeaders"), new Object[]{"A-1"}, attributes("withHeadersReversed"), headers);
+        String reversed = resolver.resolve(method("withHeadersReversed"), new Object[]{"A-1"}, attributes("withHeadersReversed"), headers);
 
         assertThat(forward).isEqualTo(reversed);
     }

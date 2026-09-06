@@ -26,6 +26,13 @@ public class CoalesceAttributeResolver {
     private final Map<Method, CoalesceAttributes> cache = new ConcurrentHashMap<>();
 
     /**
+     * Which method first claimed each derived namespace. Two methods that fall into the
+     * same one would share a Redis entry and serve each other's payloads, so the second
+     * one to arrive is refused rather than allowed to collide.
+     */
+    private final Map<String, Method> derivedNamespaceOwners = new ConcurrentHashMap<>();
+
+    /**
      * @param valueResolver resolves {@code ${...}} against the environment; pass
      *                      {@code null} to treat every attribute as a literal, which is
      *                      what a plain unit test wants
@@ -44,7 +51,7 @@ public class CoalesceAttributeResolver {
             CoalesceAttributes attrs = new CoalesceAttributes(
                     requireText(resolve(ann.key()), m, "key"),
                     headerKeys(ann.headerKeys()),
-                    resolve(ann.namespace()),
+                    namespace(resolve(ann.namespace()), m),
                     seconds(ann.freshTtlSeconds(), m, "freshTtlSeconds"),
                     seconds(ann.staleTtlSeconds(), m, "staleTtlSeconds"),
                     seconds(ann.pendingTtlSeconds(), m, "pendingTtlSeconds"),
@@ -52,6 +59,42 @@ public class CoalesceAttributeResolver {
             checkRelationships(attrs, m);
             return attrs;
         });
+    }
+
+    /**
+     * The effective namespace, resolved once here so the key and the runtime toggle are
+     * built on the same string rather than each deriving their own.
+     *
+     * <p>A blank attribute derives {@code ClassSimpleName.methodName}, which is readable in
+     * redis-cli but not unique: overloads share a method name, and two classes in different
+     * packages can share a simple name. Either produces one Redis entry serving two
+     * different results, so a derived namespace claimed by a second method is refused.
+     *
+     * <p>An explicitly written namespace is left alone even when two methods share it. That
+     * is someone deliberately pointing two methods at one entry, which is their call to
+     * make; only the accidental version is an error.
+     */
+    private String namespace(String resolved, Method method) {
+        if (!resolved.isBlank()) {
+            return resolved;
+        }
+        String derived = method.getDeclaringClass().getSimpleName() + "." + method.getName();
+        Method owner = derivedNamespaceOwners.putIfAbsent(derived, method);
+        if (owner != null && !owner.equals(method)) {
+            throw new IllegalStateException("@Coalesce on " + describeMethod(method)
+                    + " derives the namespace \"" + derived + "\", which " + describeMethod(owner)
+                    + " already uses. They would share one Redis entry and serve each other's"
+                    + " results. Give at least one of them an explicit namespace.");
+        }
+        return derived;
+    }
+
+    private static String describeMethod(Method method) {
+        StringBuilder types = new StringBuilder();
+        for (Class<?> parameter : method.getParameterTypes()) {
+            types.append(types.isEmpty() ? "" : ", ").append(parameter.getSimpleName());
+        }
+        return method.getDeclaringClass().getName() + "." + method.getName() + "(" + types + ")";
     }
 
     /**

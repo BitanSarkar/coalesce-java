@@ -122,7 +122,7 @@ class CoalesceAutoConfigurationTest {
 
                     assertThat(endpoint.status()).containsEntry("active", true);
 
-                    assertThat(endpoint.setActive(false))
+                    assertThat(endpoint.setActive(false, null))
                             .containsEntry("active", false)
                             .containsEntry("previouslyActive", true);
                     assertThat(toggle.isActive()).isFalse();
@@ -131,6 +131,19 @@ class CoalesceAutoConfigurationTest {
                             .containsEntry("active", false)
                             .containsKey("cacheHits")
                             .containsKey("bypassed");
+
+                    // Back on globally, then scoped to a single namespace.
+                    endpoint.setActive(true, null);
+                    assertThat(endpoint.setActive(false, "OrderService.getOrder"))
+                            .containsEntry("active", true)
+                            .containsEntry("namespace", "OrderService.getOrder");
+                    assertThat(toggle.isActive("OrderService.getOrder")).isFalse();
+                    assertThat(toggle.isActive("PriceService.quote")).isTrue();
+
+                    // A null active with a namespace drops the override.
+                    assertThat(endpoint.setActive(null, "OrderService.getOrder"))
+                            .containsEntry("overrideCleared", true);
+                    assertThat(toggle.isActive("OrderService.getOrder")).isTrue();
                 });
     }
 

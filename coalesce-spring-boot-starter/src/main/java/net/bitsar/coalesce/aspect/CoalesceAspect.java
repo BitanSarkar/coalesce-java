@@ -83,10 +83,10 @@ public class CoalesceAspect {
         MethodSignature sig = (MethodSignature) pjp.getSignature();
         Class<?> returnType = sig.getMethod().getReturnType();
 
-        // The kill switch is checked before anything else, including attribute resolution.
-        // Bypassed means bypassed: a misconfigured TTL must not fail a request that the
-        // operator has already taken the framework out of, and the whole reason to reach
-        // for this is that something is going wrong.
+        // The global kill switch is checked before anything else, including attribute
+        // resolution. Bypassed means bypassed: a misconfigured TTL must not fail a request
+        // that the operator has already taken the framework out of, and the whole reason to
+        // reach for this is that something is going wrong.
         if (!toggle.isActive()) {
             metrics.bypass();
             return pjp.proceed();
@@ -96,6 +96,14 @@ public class CoalesceAspect {
         // Context, which is only visible once inside the reactive chain.
         // Placeholders resolve once per method and are cached, so this is a map lookup.
         CoalesceAttributes attrs = attributeResolver.resolve(sig.getMethod(), coalesce);
+
+        // A per-namespace override needs the namespace, so it can only be consulted once
+        // attributes are resolved. Usually one dependency is sick rather than all of them,
+        // and this takes that method out of the path without unshielding the others.
+        if (!toggle.isActive(attrs.namespace())) {
+            metrics.bypass();
+            return pjp.proceed();
+        }
 
         if (Flux.class.isAssignableFrom(returnType)) {
             return Flux.deferContextual(ctx -> {

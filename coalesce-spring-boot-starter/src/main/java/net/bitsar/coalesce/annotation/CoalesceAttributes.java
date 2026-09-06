@@ -11,7 +11,9 @@ import java.util.List;
  *
  * @param keyExpression   SpEL to evaluate against the invocation's arguments
  * @param headerKeys      header names folded into the key, already split and trimmed
- * @param namespace       resolved namespace, or empty to derive it from the method
+ * @param namespace       the effective namespace: the resolved attribute, or the one
+ *                        derived from the method when the attribute was left blank. Never
+ *                        empty, and the same string the key and the toggle are built on.
  * @param freshTtl        age below which no background refresh is triggered
  * @param staleTtl        outer bound on usable staleness; also the Redis TTL
  * @param pendingTtl      lock lease, the crash-recovery safety net

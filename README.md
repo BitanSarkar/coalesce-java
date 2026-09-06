@@ -434,7 +434,12 @@ making every pod compute the byte-identical string for the same logical call:
 - If hashing a whole payload, serialize it canonically first: two JSON encodings of the
   same object with different property order hash differently.
 - Namespace defaults to `ClassSimpleName.methodName`, so the same key value used by two
-  methods cannot collide.
+  differently named methods does not collide. That default is readable in `redis-cli` but
+  it is not unique: overloads share a method name, and two classes in different packages
+  can share a simple name. Either would put two different results in one Redis entry, so a
+  derived namespace claimed by a second method is refused on resolution, naming both
+  methods. Give one of them an explicit `namespace`. Setting the same namespace on two
+  methods deliberately is left alone, since that is someone choosing to share an entry.
 
 ### Envelope format
 
@@ -705,8 +710,24 @@ nothing touches Redis, not even to read. It takes effect on the next invocation.
 ```java
 @Autowired CoalesceToggle toggle;
 
-toggle.setActive(false);   // returns the position it replaced
+toggle.setActive(false);   // everything, the big red button
 ```
+
+Usually one dependency is sick and the rest are fine, and switching the whole application
+off would strip the shield from every healthy downstream still being protected. Scope it to
+one method instead:
+
+```java
+toggle.setActive("OrderService.getOrder", false);   // just this one
+toggle.clearOverride("OrderService.getOrder");      // back to following the global switch
+```
+
+The namespace is the same string that names the method's Redis entries: the `namespace`
+attribute when set, otherwise `ClassSimpleName.methodName`. Both calls return the position
+they replaced.
+
+The global switch wins: while it is off everything is bypassed regardless of any override,
+so the big red button cannot be undermined by a stale per-method setting.
 
 `coalesce.active` sets where it starts, and defaults to true. Declare your own
 `CoalesceToggle` bean to start it from somewhere else, such as a feature-flag service.
@@ -724,10 +745,21 @@ management:
 
 ```bash
 curl localhost:8080/actuator/coalesce
-# {"active":true,"leaderExecutions":41,"cacheHits":1180, ...}
+# {"active":true,"overrides":{},"leaderExecutions":41,"cacheHits":1180, ...}
 
+# everything
 curl -X POST localhost:8080/actuator/coalesce \
      -H 'Content-Type: application/json' -d '{"active": false}'
+
+# one namespace
+curl -X POST localhost:8080/actuator/coalesce \
+     -H 'Content-Type: application/json' \
+     -d '{"namespace": "OrderService.getOrder", "active": false}'
+
+# drop the override again
+curl -X POST localhost:8080/actuator/coalesce \
+     -H 'Content-Type: application/json' \
+     -d '{"namespace": "OrderService.getOrder", "active": null}'
 ```
 
 The counters come back alongside the switch because the question anyone flipping it
@@ -735,8 +767,9 @@ actually has is whether coalescing is helping, which
 `(cacheHits + followerWaits) / requests` answers and the switch position does not. This is
 a write endpoint that disables a production safeguard, so secure it as one.
 
-Attribute resolution is skipped entirely while bypassed, so a method whose TTLs do not
-validate still serves traffic with the switch off.
+Attribute resolution is skipped entirely while the global switch is off, so a method whose
+TTLs do not validate still serves traffic. A per-namespace override needs the namespace, so
+it is consulted just after resolution rather than before it.
 
 ### Getting headers into the key
 

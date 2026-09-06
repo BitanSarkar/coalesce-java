@@ -103,6 +103,38 @@ class CoalesceIntegrationTest {
         }
     }
 
+    /**
+     * The case the global switch cannot serve: one dependency is sick and the rest are
+     * fine. Bypassing that namespace alone leaves every other annotated method shielded.
+     */
+    @Test
+    void oneNamespaceCanBeBypassedWhileTheRestKeepCoalescing() {
+        toggle.setActive("OrderService.loadCoalesced", false);
+        try {
+            List<List<OrderDto>> bypassed = Flux.range(0, 10)
+                    .flatMap(i -> orders.loadCoalesced(23))
+                    .collectList()
+                    .block(LIMIT);
+
+            assertThat(bypassed).hasSize(10);
+            assertThat(executions()).isEqualTo(10);
+
+            // A different namespace is untouched and still coalesces to one execution.
+            swr.resetRuns();
+            // One id shared by all ten callers: a fresh id per call would be ten distinct
+            // keys and would prove nothing about coalescing.
+            String id = "untouched-" + UUID.randomUUID();
+            List<String> shielded = Flux.range(0, 10)
+                    .flatMap(i -> swr.value(id))
+                    .collectList()
+                    .block(LIMIT);
+            assertThat(shielded).hasSize(10);
+            assertThat(swr.runs()).isEqualTo(1);
+        } finally {
+            toggle.clearOverride("OrderService.loadCoalesced");
+        }
+    }
+
     /** And switching it back on resumes coalescing on the very next call. */
     @Test
     void switchingItBackOnResumesCoalescing() {
