@@ -58,7 +58,7 @@ public Mono<OrderDto> getOrder(String orderId) {
 Gradle:
 
 ```groovy
-implementation 'net.bitsar:coalesce-spring-boot-starter:0.2.0'
+implementation 'net.bitsar:coalesce-spring-boot-starter:0.2.1'
 ```
 
 Maven:
@@ -67,7 +67,7 @@ Maven:
 <dependency>
     <groupId>net.bitsar</groupId>
     <artifactId>coalesce-spring-boot-starter</artifactId>
-    <version>0.2.0</version>
+    <version>0.2.1</version>
 </dependency>
 ```
 
