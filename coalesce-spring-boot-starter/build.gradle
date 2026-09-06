@@ -78,7 +78,7 @@ publishing {
             pom {
                 name = 'Coalesce Spring Boot Starter'
                 description = project.description
-                url = 'https://github.com/BitanSarkar/CoalescePOC'
+                url = 'https://github.com/BitanSarkar/coalesce-java'
                 inceptionYear = '2026'
 
                 licenses {
@@ -96,13 +96,13 @@ publishing {
                     }
                 }
                 scm {
-                    connection = 'scm:git:https://github.com/BitanSarkar/CoalescePOC.git'
-                    developerConnection = 'scm:git:ssh://git@github.com/BitanSarkar/CoalescePOC.git'
-                    url = 'https://github.com/BitanSarkar/CoalescePOC'
+                    connection = 'scm:git:https://github.com/BitanSarkar/coalesce-java.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/BitanSarkar/coalesce-java.git'
+                    url = 'https://github.com/BitanSarkar/coalesce-java'
                 }
                 issueManagement {
                     system = 'GitHub Issues'
-                    url = 'https://github.com/BitanSarkar/CoalescePOC/issues'
+                    url = 'https://github.com/BitanSarkar/coalesce-java/issues'
                 }
             }
         }

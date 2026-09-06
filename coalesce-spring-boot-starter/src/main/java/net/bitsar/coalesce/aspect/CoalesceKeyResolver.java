@@ -46,6 +46,15 @@ public class CoalesceKeyResolver {
         // DefaultParameterNameDiscoverer, not the AspectJ signature's own parameter names:
         // those are unusable unless the project was compiled with -parameters.
         String[] names = paramNames.getParameterNames(method);
+        if (names == null && attrs.keyExpression().contains("#")) {
+            // Since Spring 6.1 the debug-symbol fallback is gone, so without -parameters
+            // there are no names at all and every #variable in the expression evaluates to
+            // null. Left alone that silently collapses every argument onto ONE key, which
+            // serves one caller's data to another. Refuse instead.
+            throw new IllegalStateException(describe(method, attrs)
+                    + " references parameters by name, but no parameter names are available."
+                    + " Compile with -parameters (Spring Boot's Gradle and Maven plugins set it for you).");
+        }
         if (names != null) {
             for (int i = 0; i < names.length && i < args.length; i++) {
                 spelCtx.setVariable(names[i], args[i]);
@@ -55,6 +64,12 @@ public class CoalesceKeyResolver {
         String base = expressions
                 .computeIfAbsent(attrs.keyExpression(), parser::parseExpression)
                 .getValue(spelCtx, String.class);
+        if (base == null || base.isBlank()) {
+            // A blank key is never what the caller meant, and it groups unrelated calls
+            // together exactly like the null case above.
+            throw new IllegalStateException(describe(method, attrs) + " resolved to "
+                    + (base == null ? "null" : "an empty string") + ".");
+        }
 
         String headerPart = "";
         if (!attrs.headerKeys().isEmpty()) {
@@ -73,5 +88,11 @@ public class CoalesceKeyResolver {
         // The {} hash tag is REQUIRED for Redis Cluster and must be applied from the very
         // first implementation — retrofitting it invalidates every key already in flight.
         return CoalesceKeys.KEY_PREFIX + "{" + raw + "}";
+    }
+
+    /** The expression alone is not enough to find the annotation; name the method too. */
+    private static String describe(Method method, CoalesceAttributes attrs) {
+        return "@Coalesce key \"" + attrs.keyExpression() + "\" on "
+                + method.getDeclaringClass().getSimpleName() + "." + method.getName();
     }
 }

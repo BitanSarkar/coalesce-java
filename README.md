@@ -1,6 +1,6 @@
 # `@Coalesce`
 
-[![CI](https://github.com/BitanSarkar/CoalescePOC/actions/workflows/ci.yml/badge.svg)](https://github.com/BitanSarkar/CoalescePOC/actions/workflows/ci.yml)
+[![CI](https://github.com/BitanSarkar/coalesce-java/actions/workflows/ci.yml/badge.svg)](https://github.com/BitanSarkar/coalesce-java/actions/workflows/ci.yml)
 [![Maven Central](https://img.shields.io/maven-central/v/net.bitsar/coalesce-spring-boot-starter)](https://central.sonatype.com/artifact/net.bitsar/coalesce-spring-boot-starter)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 

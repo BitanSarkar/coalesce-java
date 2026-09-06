@@ -40,14 +40,46 @@ public class CoalesceAttributeResolver {
      * @return the resolved attributes
      */
     public CoalesceAttributes resolve(Method method, Coalesce ann) {
-        return cache.computeIfAbsent(method, m -> new CoalesceAttributes(
-                requireText(resolve(ann.key()), m, "key"),
-                headerKeys(ann.headerKeys()),
-                resolve(ann.namespace()),
-                seconds(ann.freshTtlSeconds(), m, "freshTtlSeconds"),
-                seconds(ann.staleTtlSeconds(), m, "staleTtlSeconds"),
-                seconds(ann.pendingTtlSeconds(), m, "pendingTtlSeconds"),
-                seconds(ann.waitTimeoutSeconds(), m, "waitTimeoutSeconds")));
+        return cache.computeIfAbsent(method, m -> {
+            CoalesceAttributes attrs = new CoalesceAttributes(
+                    requireText(resolve(ann.key()), m, "key"),
+                    headerKeys(ann.headerKeys()),
+                    resolve(ann.namespace()),
+                    seconds(ann.freshTtlSeconds(), m, "freshTtlSeconds"),
+                    seconds(ann.staleTtlSeconds(), m, "staleTtlSeconds"),
+                    seconds(ann.pendingTtlSeconds(), m, "pendingTtlSeconds"),
+                    seconds(ann.waitTimeoutSeconds(), m, "waitTimeoutSeconds"));
+            checkRelationships(attrs, m);
+            return attrs;
+        });
+    }
+
+    /**
+     * Each TTL can be individually valid and still combine into a configuration that
+     * quietly does not work. Both invariants below are load-bearing:
+     *
+     * <ul>
+     *   <li>{@code waitTimeout > pendingTtl}, or every follower gives up before a dead
+     *       leader's lease expires and crash recovery never fires. Nothing fails visibly;
+     *       a crash simply surfaces as a wave of timeouts instead of one takeover.
+     *   <li>{@code freshTtl <= staleTtl}, or the freshness window outlives the entry
+     *       itself and no value is ever served stale, disabling the background refresh
+     *       the annotation exists to provide.
+     * </ul>
+     */
+    private void checkRelationships(CoalesceAttributes attrs, Method method) {
+        if (attrs.waitTimeout().compareTo(attrs.pendingTtl()) <= 0) {
+            throw new IllegalStateException(describe(method, "waitTimeoutSeconds", "",
+                    "is " + attrs.waitTimeout().toSeconds() + "s, which is not greater than pendingTtlSeconds ("
+                            + attrs.pendingTtl().toSeconds() + "s). Followers would time out before a dead leader's"
+                            + " lease expires, so crash recovery could never take over."));
+        }
+        if (attrs.freshTtl().compareTo(attrs.staleTtl()) > 0) {
+            throw new IllegalStateException(describe(method, "freshTtlSeconds", "",
+                    "is " + attrs.freshTtl().toSeconds() + "s, which is greater than staleTtlSeconds ("
+                            + attrs.staleTtl().toSeconds() + "s). The entry would expire before it could ever be"
+                            + " served stale, so no background refresh would run."));
+        }
     }
 
     private String resolve(String value) {
