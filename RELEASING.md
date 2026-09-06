@@ -64,19 +64,32 @@ exactly as `gpg` printed it, with no `\n` escaping.
 
 ### How a release happens
 
-**Every merge to `main` publishes a permanent release.** The workflow reads the version from
-`gradle.properties`, builds, tests against a real Redis, signs, uploads to the Central
+**Every merge to `main` publishes a permanent release.** The workflow works out the version
+from the newest `v*` tag, builds, tests against a real Redis, signs, uploads to the Central
 Portal with `publishingType=AUTOMATIC`, waits until Central reports `PUBLISHED`, tags
-`v<version>`, creates the GitHub Release, and then commits the next patch version back to
-`main` so the following merge has a free number.
+`v<version>` and creates the GitHub Release.
 
-That bump commit also rewrites the README install snippets to the version just published,
-so the README always advertises something a consumer can actually resolve.
+The tag is the only source of truth for the version. A merge publishes the next patch after
+the newest tag, so the number for the following release is already recorded the moment this
+one is tagged, and nothing has to be committed back to `main`.
 
 ```
-merge  ->  publishes 0.1.2, tags v0.1.2, opens 0.1.3
-merge  ->  publishes 0.1.3, tags v0.1.3, opens 0.1.4
+v0.1.1 is newest  ->  merge publishes 0.1.2, tags v0.1.2
+v0.1.2 is newest  ->  merge publishes 0.1.3, tags v0.1.3
 ```
+
+`version` in `gradle.properties` is a placeholder for local builds and is never published.
+It is deliberately not a valid release version, so `centralBundle` fails rather than
+building a bundle from it. Pass a real version when you need one locally:
+
+```bash
+./gradlew -Pversion=1.2.3 :coalesce-spring-boot-starter:publishToMavenLocal
+```
+
+The README install snippets are no longer rewritten automatically, since that needed the
+push to `main` this design removes. Update them by hand when the pinned version drifts far
+enough to matter; the Maven Central badge at the top of the README always shows the current
+version.
 
 ### What that costs you
 
@@ -90,23 +103,32 @@ To merge without publishing, put `[skip release]` in the commit message:
 git commit -m "Fix a typo in the README [skip release]"
 ```
 
-Bump the minor or major version by editing `gradle.properties` in your own commit; the
-workflow only ever auto-increments the patch.
+A merge only ever increments the patch. Cut a minor or major version by pushing the tag,
+which publishes exactly that version:
 
-### Why the bump commit does not loop
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
 
-The bump is pushed with `GITHUB_TOKEN`, and pushes made with that token deliberately do not
-trigger workflow runs. It also carries `[skip ci]`, and the job has an `if` guard that skips
-such commits. That is three independent reasons it cannot release itself in a loop.
+### Why a release does not trigger another one
+
+The workflow pushes a tag and nothing else. The tag push does trigger the workflow again,
+on the tag rather than the branch, and that run releases exactly the version the tag names,
+which is already on Central by then. It stops in about twenty seconds at the
+already-published check rather than uploading a duplicate.
+
+Pushing the tag with `GITHUB_TOKEN` suppresses that second run entirely in practice, since
+pushes made with that token do not trigger workflows.
 
 Concurrency is `release-to-central` with `cancel-in-progress: false`: two merges landing
-close together queue rather than racing, since both would otherwise read the same version
-out of `gradle.properties` and the second upload would be rejected as a duplicate.
+close together queue rather than racing, since both would otherwise compute the same next
+patch from the same newest tag and the second upload would be rejected as a duplicate.
 
 ### Releasing without merging
 
-Pushing a `v*` tag releases whatever `gradle.properties` holds, skipping the auto-bump. The
-tag must match the file or the run fails before uploading anything.
+Pushing a `v*` tag releases exactly that version. This is how a minor or major release is
+cut, and it is the only way to publish a version that is not the next patch.
 
 **Actions → Release to Maven Central → Run workflow** does the same from the current `main`,
 and lets you choose `USER_MANAGED` to hold the deployment for a manual Publish click instead
@@ -122,17 +144,17 @@ by hand or for debugging a failing workflow run.
 
 ## Each release
 
-### 1. Set the version
+### 1. Choose the version
 
-`version` in `gradle.properties` is the single source of truth. Central rejects anything
-ending in `-SNAPSHOT`, and `centralBundle` fails early rather than letting you find out at
-upload time. Versions are immutable once published: a mistake needs a new version, not a
-re-upload.
+Pass it explicitly with `-Pversion`; `gradle.properties` holds only a local placeholder.
+`centralBundle` refuses anything that is not `MAJOR.MINOR.PATCH`, so a snapshot or the
+placeholder fails early rather than at upload time. Versions are immutable once published:
+a mistake needs a new version, not a re-upload.
 
 ### 2. Build and verify the bundle
 
 ```bash
-./gradlew clean build centralBundle
+./gradlew clean build centralBundle -Pversion=0.3.0
 ```
 
 That runs the tests, builds the jar, sources jar and javadoc jar, signs all four plus the

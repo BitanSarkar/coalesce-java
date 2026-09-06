@@ -4,6 +4,10 @@
 # they cannot be deleted, replaced or reused, so each merge burns a patch number forever.
 # Put [skip release] in a commit message to merge without publishing.
 #
+# The version comes from git tags, never from a file. A merge to main publishes the next
+# patch after the newest v* tag; pushing a v* tag publishes exactly that version, which is
+# how a minor or major release is cut. Nothing is committed back to main after a release.
+#
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   SIGNING_KEY       armoured PGP private key, pasted whole, including the BEGIN/END lines
 #   SIGNING_PASSWORD  its passphrase (an empty secret if the key has none)
@@ -15,8 +19,8 @@ name: Release to Maven Central
 on:
   push:
     branches: [main]
-    # A tag still works as an explicit release of whatever gradle.properties holds; that
-    # path skips the auto-bump.
+    # Pushing a tag publishes exactly that version: this is how a minor or major release
+    # is cut, e.g. git tag v0.3.0 && git push origin v0.3.0.
     tags: ['v*']
   workflow_dispatch:
     inputs:
@@ -26,8 +30,9 @@ on:
         default: AUTOMATIC
         options: [AUTOMATIC, USER_MANAGED]
 
-# Never cancel a release in flight, and never run two at once: concurrent runs would read
-# the same version out of gradle.properties and the second would be rejected as a duplicate.
+# Never cancel a release in flight, and never run two at once: both would compute the same
+# next patch from the same newest tag, and the second upload would be rejected as a
+# duplicate.
 concurrency:
   group: release-to-central
   cancel-in-progress: false
@@ -35,15 +40,16 @@ concurrency:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Skip merges explicitly marked, and skip the workflow's own version-bump commit.
-    # Pushes made with GITHUB_TOKEN do not trigger workflows, so the bump cannot loop;
-    # this check is a second line of defence, not the primary one.
+    # Skip merges explicitly marked as not for release. There is no longer a version-bump
+    # commit to skip: the workflow pushes a tag and nothing else, and a tag push releases
+    # exactly that tag rather than looping.
     if: >-
       !contains(github.event.head_commit.message, '[skip release]') &&
       !contains(github.event.head_commit.message, '[skip ci]')
 
     permissions:
-      # write: the job pushes the version bump, the tag, and the GitHub Release.
+      # write: the job pushes the release tag and creates the GitHub Release. It never
+      # pushes to a branch, which is what lets main stay behind a pull-request rule.
       contents: write
 
     services:
@@ -60,9 +66,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The bump is committed back to main, so check out the branch rather than the
-          # detached commit, and keep credentials for the push.
-          ref: ${{ github.ref_name }}
+          # Full history including tags: the version to publish is derived from the newest
+          # v* tag, and a shallow clone would not have it.
           fetch-depth: 0
 
       - name: Validate Gradle wrapper
@@ -75,33 +80,36 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      - name: Read project version
+      # Tags are the source of truth for the published version. Keeping it in a file meant
+      # committing the next number back to main after every release, which a pull-request
+      # rule on the branch blocks outright.
+      - name: Work out the version to publish
         id: version
         run: |
-          VERSION=$(./gradlew -q properties | awk '/^version:/ {print $2}')
-          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Releasing ${VERSION}"
+          set -euo pipefail
 
-      - name: Reject snapshots
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-        run: |
-          case "$VERSION" in
-            *-SNAPSHOT)
-              echo "::error::Maven Central does not accept snapshots (version is $VERSION)"
-              exit 1 ;;
-          esac
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            echo "Tag push: releasing exactly ${VERSION}"
+          else
+            NEWEST=$(git tag -l 'v*' --sort=-v:refname | head -n1)
+            if [ -z "$NEWEST" ]; then
+              VERSION="0.1.0"
+              echo "No v* tag exists yet: seeding at ${VERSION}"
+            else
+              VERSION=$(printf '%s' "${NEWEST#v}" | awk -F. -v OFS=. '{ $NF = $NF + 1; print }')
+              echo "Newest tag is ${NEWEST}: releasing ${VERSION}"
+            fi
+          fi
 
-      - name: Check the tag matches gradle.properties
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          TAG: ${{ github.ref_name }}
-          VERSION: ${{ steps.version.outputs.value }}
-        run: |
-          if [ "${TAG#v}" != "$VERSION" ]; then
-            echo "::error::Tag $TAG does not match version $VERSION in gradle.properties"
+          # Central will not take a snapshot or a qualifier, and a malformed version here
+          # would only surface two minutes later as a rejected upload.
+          if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Refusing to publish \"${VERSION}\": expected MAJOR.MINOR.PATCH with no suffix"
             exit 1
           fi
+
+          echo "value=${VERSION}" >> "$GITHUB_OUTPUT"
 
       # Central versions are immutable, so a duplicate upload is always rejected. Checking
       # first turns a two-minute failure into a twenty-second, clearly-explained skip --
@@ -114,7 +122,7 @@ jobs:
           URL="https://repo1.maven.org/maven2/net/bitsar/coalesce-spring-boot-starter/${VERSION}/coalesce-spring-boot-starter-${VERSION}.pom"
           CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 "$URL" || echo "000")
           if [ "$CODE" = "200" ]; then
-            echo "::warning::${VERSION} is already on Maven Central; nothing to publish. Was the version bump not committed?"
+            echo "::warning::${VERSION} is already on Maven Central; nothing to publish. Was the release tag not pushed?"
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -122,7 +130,9 @@ jobs:
           fi
 
       - name: Build and test
-        run: ./gradlew --no-daemon build
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: ./gradlew --no-daemon -Pversion="${VERSION}" build
 
       - name: Summarise test results
         if: always()
@@ -133,7 +143,8 @@ jobs:
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
-        run: ./gradlew --no-daemon :coalesce-spring-boot-starter:centralBundle
+          VERSION: ${{ steps.version.outputs.value }}
+        run: ./gradlew --no-daemon -Pversion="${VERSION}" :coalesce-spring-boot-starter:centralBundle
 
       - name: Keep the bundle as a build artifact
         if: steps.published.outputs.skip == 'false'
@@ -299,30 +310,3 @@ jobs:
       #
       # Pushed with GITHUB_TOKEN, whose pushes deliberately do not trigger workflows --
       # that is what stops this from releasing itself in a loop.
-      - name: Open the next patch version
-        if: steps.published.outputs.skip == 'false' && github.ref == 'refs/heads/main'
-        env:
-          VERSION: ${{ steps.version.outputs.value }}
-        run: |
-          set -euo pipefail
-          NEXT=$(echo "$VERSION" | awk -F. -v OFS=. '{ $NF = $NF + 1; print }')
-
-          sed -e "s|^version=.*|version=${NEXT}|" gradle.properties > gradle.properties.tmp
-          mv gradle.properties.tmp gradle.properties
-
-          # README advertises the newest resolvable version, which is the one just published.
-          sed -e "s|net.bitsar:coalesce-spring-boot-starter:[0-9][0-9.]*|net.bitsar:coalesce-spring-boot-starter:${VERSION}|g" \
-              -e "s|<version>[0-9][0-9.]*</version>|<version>${VERSION}</version>|g" \
-              README.md > README.md.tmp
-          mv README.md.tmp README.md
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add gradle.properties README.md
-          git commit -m "Open ${NEXT} for development [skip ci]" \
-            -m "${VERSION} is published and immutable, so development moves to the next patch."
-
-          # Another merge may have landed while Central was publishing.
-          git pull --rebase origin main
-          git push origin HEAD:main
-          echo "::notice::Opened ${NEXT}; README now advertises ${VERSION}"

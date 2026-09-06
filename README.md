@@ -908,9 +908,17 @@ claim. Needs a Redis on `localhost:6379`.
 
 Releases go out through `.github/workflows/release.yml`, and **every merge to `main`
 publishes a permanent release**: it builds, tests against a real Redis, signs, uploads to
-the Central Portal, waits for Central to confirm, tags `v<version>`, creates the GitHub
-Release, then opens the next patch version and points these install snippets at what was
-just published.
+the Central Portal, waits for Central to confirm, tags `v<version>` and creates the GitHub
+Release.
+
+The version comes from the tags, not from a file. A merge publishes the next patch after
+the newest `v*` tag, so `gradle.properties` holds only a placeholder for local builds and
+nothing is committed back to `main` after a release. Cut a minor or major version by
+pushing the tag yourself:
+
+```bash
+git tag v0.3.0 && git push origin v0.3.0
+```
 
 Maven Central versions are immutable, so each merge burns a patch number forever. To merge
 without publishing:

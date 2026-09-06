@@ -19,10 +19,10 @@ withdrawn, so let it finish.
 
 ## What merging does
 
-Merging to `main` publishes a **permanent** release. The workflow reads the version from
-`gradle.properties`, builds, signs, uploads to the Central Portal, waits for Central to
-confirm, tags `v<version>`, creates the GitHub Release, then commits the next patch version
-back to `main`.
+Merging to `main` publishes a **permanent** release. The workflow works out the version
+from the newest `v*` tag, builds, signs, uploads to the Central Portal, waits for Central
+to confirm, tags `v<version>` and creates the GitHub Release. Nothing is committed back to
+`main`.
 
 Maven Central versions are immutable: they cannot be deleted, replaced or reused. A merge
 burns a patch number forever.
@@ -45,18 +45,33 @@ demo, `consumer-check`.
 
 ### Bumping more than a patch
 
-The workflow only auto-increments the patch. For a minor or major release, edit `version`
-in `gradle.properties` in your pull request; the merge publishes what the file says.
+A merge only ever increments the patch. Cut a minor or major version by pushing the tag
+yourself, which publishes exactly that version:
+
+```bash
+git tag v0.3.0
+git push origin v0.3.0
+```
 
 A breaking change to the public API needs at least a minor bump. `0.2.0` was one: the
 `@Coalesce` TTL attributes became `String` so they could hold property placeholders.
 
 ## Branch protection
 
-If you protect `main` with "require a pull request before merging", **exempt
-`github-actions[bot]`** or the release workflow cannot push its version-bump commit and
-every release will half-complete: published to Central and tagged, but with `main` still
-holding the version that was just consumed.
+`main` requires a pull request, and the release workflow works with that: it pushes a tag
+and never a branch, and a ruleset targeting `refs/heads/main` does not apply to tags.
+
+This is why the version lives in tags rather than in `gradle.properties`. The workflow used
+to commit the next version back to `main` after publishing, which a pull-request rule
+rejects outright, leaving every release half-complete: published to Central and tagged, but
+with `main` still holding the version that was just consumed. Exempting
+`github-actions[bot]` is the obvious fix and it is not available here. GitHub refuses to
+add the Actions integration to a ruleset bypass list on a user-owned repository, because a
+bypass actor has to belong to the ruleset's owning organisation:
+
+```
+Actor GitHub Actions integration must be part of the ruleset source or owner organization
+```
 
 ## Before opening a pull request
 
