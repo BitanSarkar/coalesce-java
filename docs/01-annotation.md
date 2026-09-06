@@ -1,4 +1,4 @@
-# The `@Coalesce` Annotation
+# The `@Coalesce` annotation
 
 ```java
 package net.bitsar.coalesce;
@@ -16,8 +16,8 @@ public @interface Coalesce {
      * SpEL expression evaluated against the method's parameters, e.g. "#orderId"
      * or "#request.orderId". Must be deterministic: given the same logical call,
      * every pod must produce the same string. Do NOT derive this from
-     * Object#toString() of a whole DTO (identity-based, differs per instance) —
-     * reference explicit fields instead.
+     * Object#toString() of a whole DTO (identity-based, differs per instance).
+     * Reference explicit fields instead.
      */
     String key();
 
@@ -25,7 +25,7 @@ public @interface Coalesce {
      * HTTP header names to fold into the key, e.g. {"X-Tenant-Id"}. Sorted
      * internally before joining, so declaration order does not matter. Requires
      * either the annotated method to accept ServerWebExchange/ServerHttpRequest
-     * as a parameter, OR a WebFilter populating the Reactor Context — see
+     * as a parameter, OR a WebFilter populating the Reactor Context. See
      * 04-key-resolution.md.
      */
     String[] headerKeys() default {};
@@ -48,7 +48,7 @@ public @interface Coalesce {
 
     /**
      * Outer bound on how long a cached result is usable at all. This is also
-     * the Redis bucket's TTL — once it expires, the key is ABSENT again and
+     * the Redis bucket's TTL. Once it expires, the key is ABSENT again and
      * the next caller pays a full execution with no fallback.
      */
     long staleTtlSeconds() default 60;
@@ -56,7 +56,7 @@ public @interface Coalesce {
     /**
      * Safety-net TTL on the lock itself: if a leader's pod crashes mid-execution,
      * the lock expires after this long and the next caller can acquire it fresh.
-     * Set this comfortably above your method's expected p99 latency — too short
+     * Set this comfortably above your method's expected p99 latency. Too short
      * and a slow-but-healthy leader gets "recovered from" while still working,
      * causing pile-on load on an already-slow downstream.
      */
@@ -90,6 +90,6 @@ public Mono<OrderDto> getOrder(String orderId) {
 
 | Goal | freshTtlSeconds | staleTtlSeconds |
 |---|---|---|
-| Pure coalescing only (dedupe simultaneous calls, no caching after) | equal to staleTtlSeconds, both small (2–5s) | small (2–5s) |
-| TPS shield with background refresh (SWR) | small, non-zero (e.g. 5–15s) | your real staleness tolerance (e.g. 60–300s) |
+| Pure coalescing only (dedupe simultaneous calls, no caching after) | equal to staleTtlSeconds, both small (2 to 5s) | small (2 to 5s) |
+| TPS shield with background refresh (SWR) | small, non-zero (e.g. 5 to 15s) | your real staleness tolerance (e.g. 60 to 300s) |
 | Aggressive TPS shield, refresh on every miss window | 0 | your real staleness tolerance |

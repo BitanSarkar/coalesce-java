@@ -24,7 +24,7 @@ Merging to `main` publishes a **permanent** release. The workflow reads the vers
 confirm, tags `v<version>`, creates the GitHub Release, then commits the next patch version
 back to `main`.
 
-Maven Central versions are immutable — they cannot be deleted, replaced or reused. A merge
+Maven Central versions are immutable: they cannot be deleted, replaced or reused. A merge
 burns a patch number forever.
 
 ### Merging without publishing
@@ -39,9 +39,9 @@ Update GitHub Actions to Node 24 runtimes [skip release]
 Use it for changes that cannot affect the published jar: workflows, README, tests, the
 demo, `consumer-check`.
 
-> Note the related footgun: writing the literal `[skip ci]` anywhere in a commit message —
-> even while describing it — makes GitHub suppress the workflow run entirely, before any of
-> this repository's own conditions are evaluated.
+> A related footgun: writing the literal `[skip ci]` anywhere in a commit message, even
+> while describing it, makes GitHub suppress the workflow run entirely, before any of this
+> repository's own conditions are evaluated.
 
 ### Bumping more than a patch
 

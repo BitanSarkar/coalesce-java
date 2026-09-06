@@ -1,7 +1,7 @@
 # Releasing to Maven Central
 
 The published artifact is `net.bitsar:coalesce-spring-boot-starter`. The `coalesce-demo`
-module is deliberately not published — it has no `maven-publish` plugin, so no release task
+module is deliberately not published. It has no `maven-publish` plugin, so no release task
 can reach it.
 
 ## One-time setup
@@ -11,11 +11,11 @@ can reach it.
 Sign in at [central.sonatype.com](https://central.sonatype.com) → **Namespaces** → **Add
 Namespace** → `net.bitsar`. Verification is a DNS check: add the `TXT` record the Portal
 shows you to `bitsar.net`, then press **Verify**. This is why the groupId has to be a domain
-you control — Central will not accept `com.example` or any namespace you cannot prove.
+you control. Central will not accept `com.example` or any namespace you cannot prove.
 
 ### 2. Generate a publishing token
 
-**Account** → **Generate User Token**. It gives you a username/password pair — these are the
+**Account** → **Generate User Token**. It gives you a username/password pair: these are the
 `CENTRAL_USERNAME` / `CENTRAL_PASSWORD` used below, not your portal login.
 
 ### 3. Create a PGP key and publish it
@@ -35,7 +35,7 @@ gpg --armor --export-secret-keys <KEY_ID> > ~/coalesce-signing-key.asc
 
 ### 4. Tell Gradle about the key
 
-Put these in `~/.gradle/gradle.properties` — **never** in the repo, which is why
+Put these in `~/.gradle/gradle.properties`, never in the repo, which is why
 `gradle-local.properties` and `*.asc` are in `.gitignore`:
 
 ```properties
@@ -54,13 +54,13 @@ secrets under **Settings → Secrets and variables → Actions**:
 
 | secret | value |
 |---|---|
-| `SIGNING_KEY` | the armoured private key, pasted whole — `gpg --armor --export-secret-keys <KEY_ID>`, including the `BEGIN`/`END` lines |
+| `SIGNING_KEY` | the armoured private key, pasted whole (`gpg --armor --export-secret-keys <KEY_ID>`), including the `BEGIN`/`END` lines |
 | `SIGNING_PASSWORD` | the key's passphrase; add it as an empty secret if the key has none |
 | `CENTRAL_USERNAME` | username half of the portal user token |
 | `CENTRAL_PASSWORD` | password half of the portal user token |
 
-Unlike `~/.gradle/gradle.properties`, a GitHub secret takes real newlines — paste the key
-exactly as `gpg` printed it, no `\n` escaping.
+Unlike `~/.gradle/gradle.properties`, a GitHub secret takes real newlines: paste the key
+exactly as `gpg` printed it, with no `\n` escaping.
 
 ### How a release happens
 
@@ -80,9 +80,9 @@ merge  ->  publishes 0.1.3, tags v0.1.3, opens 0.1.4
 
 ### What that costs you
 
-Maven Central versions are **immutable**: they cannot be deleted, replaced, or reused. Every
+Maven Central versions are immutable: they cannot be deleted, replaced, or reused. Every
 merge burns a patch number permanently, including a README typo fix. A bad merge is public
-and cannot be withdrawn — only superseded by another release.
+and cannot be withdrawn, only superseded by another release.
 
 To merge without publishing, put `[skip release]` in the commit message:
 
@@ -97,7 +97,7 @@ workflow only ever auto-increments the patch.
 
 The bump is pushed with `GITHUB_TOKEN`, and pushes made with that token deliberately do not
 trigger workflow runs. It also carries `[skip ci]`, and the job has an `if` guard that skips
-such commits — three independent reasons it cannot release itself in a loop.
+such commits. That is three independent reasons it cannot release itself in a loop.
 
 Concurrency is `release-to-central` with `cancel-in-progress: false`: two merges landing
 close together queue rather than racing, since both would otherwise read the same version
@@ -126,7 +126,7 @@ by hand or for debugging a failing workflow run.
 
 `version` in `gradle.properties` is the single source of truth. Central rejects anything
 ending in `-SNAPSHOT`, and `centralBundle` fails early rather than letting you find out at
-upload time. Versions are immutable once published — a mistake needs a new version, not a
+upload time. Versions are immutable once published: a mistake needs a new version, not a
 re-upload.
 
 ### 2. Build and verify the bundle
@@ -161,13 +161,13 @@ curl --request POST \
 ```
 
 The response is a deployment id. The deployment sits in `VALIDATED` state until you press
-**Publish** in the portal — nothing is public until then, so a bad bundle can still be
-dropped. Expect 10–30 minutes before the artifact is resolvable, and a few hours before it
-appears in search.
+**Publish** in the portal. Nothing is public until then, so a bad bundle can still be
+dropped. Expect 10 to 30 minutes before the artifact is resolvable, and a few hours before
+it appears in search.
 
 ### 4. Verify what actually landed
 
-Once Central has synced (10-30 minutes; the portal marks it published sooner than
+Once Central has synced (10 to 30 minutes; the portal marks it published sooner than
 `repo1.maven.org` serves it):
 
 ```bash
@@ -175,7 +175,7 @@ Once Central has synced (10-30 minutes; the portal marks it published sooner tha
 ```
 
 This resolves the starter from `mavenCentral()` only and exercises it from `com.acme.app`,
-so it fails if auto-configuration did not make it into the jar — the one defect that a green
+so it fails if auto-configuration did not make it into the jar, the one defect that a green
 release build cannot catch, because the in-repo demo would still work through the local
 project dependency. Needs a Redis on `localhost:6379`.
 

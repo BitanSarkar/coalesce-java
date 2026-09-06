@@ -1,4 +1,4 @@
-# The Aspect
+# The aspect
 
 This is the consolidated, final version reflecting every fix discussed:
 bucket-checked-before-lock, `lockId` instead of thread id, `ABSENT` handled like
@@ -116,7 +116,7 @@ public class CoalesceAspect {
             .flatMap(acquired -> acquired
                 ? runAsLeader(pjp, ann, key, lockId, isRefresh)
                 : (isRefresh ? Mono.empty() : awaitAsFollower(pjp, ann, key)));
-                // losing the race during a background refresh is a no-op, not a wait —
+                // losing the race during a background refresh is a no-op, not a wait:
                 // someone else is already refreshing, and the caller already got a response
     }
 
@@ -171,7 +171,7 @@ public class CoalesceAspect {
         MethodSignature sig = (MethodSignature) pjp.getSignature();
         StandardEvaluationContext spelCtx = new StandardEvaluationContext();
 
-        String[] names = paramNames.getParameterNames(sig.getMethod()); // NOT sig.getParameterNames() — see note below
+        String[] names = paramNames.getParameterNames(sig.getMethod()); // NOT sig.getParameterNames(), see note below
         Object[] args = pjp.getArgs();
         for (int i = 0; i < names.length; i++) spelCtx.setVariable(names[i], args[i]);
 
@@ -191,7 +191,7 @@ public class CoalesceAspect {
             : ann.namespace();
 
         String raw = namespace + ":" + base + (headerPart.isEmpty() ? "" : ":" + headerPart);
-        // {} hash tag is REQUIRED for Redis Cluster — see 05-cluster-considerations.md
+        // {} hash tag is REQUIRED for Redis Cluster, see 05-cluster-considerations.md
         return "coalesce:{" + raw + "}";
     }
 
