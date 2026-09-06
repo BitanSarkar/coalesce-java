@@ -433,13 +433,13 @@ making every pod compute the byte-identical string for the same logical call:
   trimmed.
 - If hashing a whole payload, serialize it canonically first: two JSON encodings of the
   same object with different property order hash differently.
-- Namespace defaults to `ClassSimpleName.methodName`, so the same key value used by two
-  differently named methods does not collide. That default is readable in `redis-cli` but
-  it is not unique: overloads share a method name, and two classes in different packages
-  can share a simple name. Either would put two different results in one Redis entry, so a
-  derived namespace claimed by a second method is refused on resolution, naming both
-  methods. Give one of them an explicit `namespace`. Setting the same namespace on two
-  methods deliberately is left alone, since that is someone choosing to share an entry.
+- Namespace defaults to the method's full signature,
+  `com.acme.OrderService.getOrder(String)`. The shorter `ClassSimpleName.methodName` would
+  not be unique: overloads share a method name, and two classes in different packages share
+  a simple name, so either shape would put two different results in one Redis entry. The
+  package and parameter types make it unique by construction, so overloads work with no
+  annotation changes. Set `namespace` explicitly to shorten it. Two methods sharing an
+  explicit namespace is left alone, since that is someone choosing to share an entry.
 
 ### Envelope format
 
@@ -466,6 +466,13 @@ value look freshly computed, and background refresh never fires at all.
 
 The hit path being one round trip is why this pays off on a warm key, and the five-trip
 cold path is why it is a bad deal when every key is unique.
+
+**Every path costs one more than the table says**, because the runtime kill switch is read
+through on each invocation, so a cache hit is really two round trips. The figures above are
+the coalescing path's own cost, and the measured runs quoted earlier in this README were
+taken before the switch existed. See
+[Turning it off at runtime](#turning-it-off-at-runtime) for why it is read rather than
+cached, and what would remove the cost.
 
 ---
 
@@ -710,7 +717,7 @@ nothing touches Redis, not even to read. It takes effect on the next invocation.
 ```java
 @Autowired CoalesceToggle toggle;
 
-toggle.setActive(false);   // everything, the big red button
+toggle.setActive(false).subscribe();   // everything, the big red button
 ```
 
 Usually one dependency is sick and the rest are fine, and switching the whole application
@@ -718,13 +725,30 @@ off would strip the shield from every healthy downstream still being protected. 
 one method instead:
 
 ```java
-toggle.setActive("OrderService.getOrder", false);   // just this one
-toggle.clearOverride("OrderService.getOrder");      // back to following the global switch
+toggle.setActive("com.acme.OrderService.getOrder(String)", false).subscribe();
+toggle.clearOverride("com.acme.OrderService.getOrder(String)").subscribe();
 ```
 
 The namespace is the same string that names the method's Redis entries: the `namespace`
-attribute when set, otherwise `ClassSimpleName.methodName`. Both calls return the position
+attribute when set, otherwise the method's full signature. Both calls return the position
 they replaced.
+
+**The switch lives in Redis, not in a field.** A pod-local switch would only affect the one
+pod the load balancer happened to route the request to, leaving every other pod coalescing
+while the operator believed otherwise. Every pod reads the same state, so one call moves
+the fleet, and every operation is reactive because reading it is a Redis call.
+
+The cost is a round trip: the switch is read through on every annotated invocation, so a
+cache hit is **two** round trips rather than one. That buys agreement across pods with no
+propagation delay and nothing to reconcile. Caching it locally and invalidating over
+pub/sub would remove the cost, and `CoalesceToggle` is an interface so that implementation
+drops in without the aspect changing.
+
+Nothing is written at startup, so pods cannot race to seed it: an unset switch falls back
+to `coalesce.active`, and a namespace with no override of its own follows the global
+switch. If Redis cannot be read the switch reports active, which keeps a Redis outage
+behaving exactly as it did before the switch existed. The corollary is that the switch
+itself is not reliably reachable during an outage.
 
 The global switch wins: while it is off everything is bypassed regardless of any override,
 so the big red button cannot be undermined by a stale per-method setting.
@@ -767,9 +791,10 @@ actually has is whether coalescing is helping, which
 `(cacheHits + followerWaits) / requests` answers and the switch position does not. This is
 a write endpoint that disables a production safeguard, so secure it as one.
 
-Attribute resolution is skipped entirely while the global switch is off, so a method whose
-TTLs do not validate still serves traffic. A per-namespace override needs the namespace, so
-it is consulted just after resolution rather than before it.
+A method whose TTLs do not validate can still be bypassed: when attribute resolution
+fails there is no namespace to look up, so only the global switch is consulted, and if it
+is off the call goes straight through instead of failing. Taking the framework out of the
+path includes taking it out of its own configuration errors.
 
 ### Getting headers into the key
 

@@ -84,7 +84,7 @@ class CoalesceIntegrationTest {
     @Test
     void switchingTheToggleOffStopsCoalescingWithoutARestart() {
         int bucket = 21;
-        toggle.setActive(false);
+        toggle.setActive(false).block(LIMIT);
         try {
             List<List<OrderDto>> results = Flux.range(0, 20)
                     .flatMap(i -> orders.loadCoalesced(bucket))
@@ -99,7 +99,7 @@ class CoalesceIntegrationTest {
                     .containsEntry("leaderExecutions", 0L)
                     .containsEntry("bypassed", 20L);
         } finally {
-            toggle.setActive(true);
+            toggle.setActive(true).block(LIMIT);
         }
     }
 
@@ -109,7 +109,10 @@ class CoalesceIntegrationTest {
      */
     @Test
     void oneNamespaceCanBeBypassedWhileTheRestKeepCoalescing() {
-        toggle.setActive("OrderService.loadCoalesced", false);
+        // The derived namespace is the full signature, so build it from the method rather
+        // than hardcoding a string that would drift the moment the signature changes.
+        String namespace = OrderService.class.getName() + ".loadCoalesced(int)";
+        toggle.setActive(namespace, false).block(LIMIT);
         try {
             List<List<OrderDto>> bypassed = Flux.range(0, 10)
                     .flatMap(i -> orders.loadCoalesced(23))
@@ -131,7 +134,7 @@ class CoalesceIntegrationTest {
             assertThat(shielded).hasSize(10);
             assertThat(swr.runs()).isEqualTo(1);
         } finally {
-            toggle.clearOverride("OrderService.loadCoalesced");
+            toggle.clearOverride(namespace).block(LIMIT);
         }
     }
 
@@ -139,9 +142,9 @@ class CoalesceIntegrationTest {
     @Test
     void switchingItBackOnResumesCoalescing() {
         int bucket = 22;
-        toggle.setActive(false);
+        toggle.setActive(false).block(LIMIT);
         orders.loadCoalesced(bucket).block(LIMIT);
-        toggle.setActive(true);
+        toggle.setActive(true).block(LIMIT);
 
         List<List<OrderDto>> results = Flux.range(0, 10)
                 .flatMap(i -> orders.loadCoalesced(bucket))

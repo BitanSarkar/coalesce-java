@@ -10,6 +10,8 @@ import net.bitsar.coalesce.coordinator.RedissonCoalesceCoordinator;
 import net.bitsar.coalesce.actuate.CoalesceEndpoint;
 import net.bitsar.coalesce.metrics.CoalesceMetrics;
 import net.bitsar.coalesce.toggle.CoalesceToggle;
+import net.bitsar.coalesce.toggle.RedisCoalesceToggle;
+import reactor.core.publisher.Mono;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.redisson.api.RedissonClient;
@@ -54,18 +56,23 @@ class CoalesceAutoConfigurationTest {
 
     // ---------- the runtime kill switch ----------
 
+    /**
+     * The switch is Redis-backed so it moves every pod at once, which means its behaviour
+     * belongs in the Redis-gated integration tests. What matters here is only that it is
+     * wired, and wired to the shared implementation rather than something pod-local.
+     */
     @Test
-    void theToggleStartsActive() {
-        runner.run(context -> assertThat(context.getBean(CoalesceToggle.class).isActive()).isTrue());
+    void theToggleIsRedisBacked() {
+        runner.run(context -> assertThat(context).hasSingleBean(CoalesceToggle.class)
+                .getBean(CoalesceToggle.class).isInstanceOf(RedisCoalesceToggle.class));
     }
 
     /** Starting bypassed still wires everything, so it can be switched on without a restart. */
     @Test
-    void coalesceActiveFalseStartsBypassedButFullyWired() {
-        runner.withPropertyValues("coalesce.active=false").run(context -> {
-            assertThat(context).hasSingleBean(CoalesceAspect.class);
-            assertThat(context.getBean(CoalesceToggle.class).isActive()).isFalse();
-        });
+    void coalesceActiveFalseStillWiresEverything() {
+        runner.withPropertyValues("coalesce.active=false").run(context -> assertThat(context)
+                .hasSingleBean(CoalesceAspect.class)
+                .hasSingleBean(CoalesceToggle.class));
     }
 
     /** coalesce.enabled=false removes the beans, so there is nothing left to toggle. */
@@ -77,10 +84,9 @@ class CoalesceAutoConfigurationTest {
 
     @Test
     void anApplicationCanSupplyItsOwnToggle() {
-        runner.withUserConfiguration(CustomToggleConfig.class).run(context -> {
-            assertThat(context).hasSingleBean(CoalesceToggle.class);
-            assertThat(context.getBean(CoalesceToggle.class).isActive()).isFalse();
-        });
+        runner.withUserConfiguration(CustomToggleConfig.class).run(context -> assertThat(context)
+                .hasSingleBean(CoalesceToggle.class)
+                .getBean(CoalesceToggle.class).isNotInstanceOf(RedisCoalesceToggle.class));
     }
 
     // ---------- the Actuator endpoint ----------
@@ -112,46 +118,36 @@ class CoalesceAutoConfigurationTest {
                 .run(context -> assertThat(context).hasSingleBean(CoalesceEndpoint.class));
     }
 
-    /** The endpoint reads and writes the same switch the aspect consults. */
-    @Test
-    void theEndpointFlipsTheToggleTheAspectUses() {
-        actuatorRunner.withPropertyValues("management.endpoints.web.exposure.include=coalesce")
-                .run(context -> {
-                    CoalesceEndpoint endpoint = context.getBean(CoalesceEndpoint.class);
-                    CoalesceToggle toggle = context.getBean(CoalesceToggle.class);
-
-                    assertThat(endpoint.status()).containsEntry("active", true);
-
-                    assertThat(endpoint.setActive(false, null))
-                            .containsEntry("active", false)
-                            .containsEntry("previouslyActive", true);
-                    assertThat(toggle.isActive()).isFalse();
-
-                    assertThat(endpoint.status())
-                            .containsEntry("active", false)
-                            .containsKey("cacheHits")
-                            .containsKey("bypassed");
-
-                    // Back on globally, then scoped to a single namespace.
-                    endpoint.setActive(true, null);
-                    assertThat(endpoint.setActive(false, "OrderService.getOrder"))
-                            .containsEntry("active", true)
-                            .containsEntry("namespace", "OrderService.getOrder");
-                    assertThat(toggle.isActive("OrderService.getOrder")).isFalse();
-                    assertThat(toggle.isActive("PriceService.quote")).isTrue();
-
-                    // A null active with a namespace drops the override.
-                    assertThat(endpoint.setActive(null, "OrderService.getOrder"))
-                            .containsEntry("overrideCleared", true);
-                    assertThat(toggle.isActive("OrderService.getOrder")).isTrue();
-                });
-    }
-
     @Configuration(proxyBeanMethods = false)
     static class CustomToggleConfig {
+        /** Stands in for an application driving the switch from a feature-flag service. */
         @Bean
         CoalesceToggle coalesceToggle() {
-            return new CoalesceToggle(false);
+            return new CoalesceToggle() {
+                public Mono<Boolean> isActive() {
+                    return Mono.just(false);
+                }
+
+                public Mono<Boolean> isActive(String namespace) {
+                    return Mono.just(false);
+                }
+
+                public Mono<Boolean> setActive(boolean value) {
+                    return Mono.just(false);
+                }
+
+                public Mono<Boolean> setActive(String namespace, boolean value) {
+                    return Mono.just(false);
+                }
+
+                public Mono<Boolean> clearOverride(String namespace) {
+                    return Mono.just(false);
+                }
+
+                public Mono<java.util.Map<String, Boolean>> overrides() {
+                    return Mono.just(java.util.Map.of());
+                }
+            };
         }
     }
 

@@ -65,34 +65,43 @@ public class CoalesceAttributeResolver {
      * The effective namespace, resolved once here so the key and the runtime toggle are
      * built on the same string rather than each deriving their own.
      *
-     * <p>A blank attribute derives {@code ClassSimpleName.methodName}, which is readable in
-     * redis-cli but not unique: overloads share a method name, and two classes in different
-     * packages can share a simple name. Either produces one Redis entry serving two
-     * different results, so a derived namespace claimed by a second method is refused.
+     * <p>A blank attribute derives the method's full signature:
+     * {@code com.acme.OrderService.getOrder(String,boolean)}. The obvious shorter default,
+     * {@code ClassSimpleName.methodName}, is not unique. Overloads share a method name, and
+     * two classes in different packages share a simple name, so either shape would put two
+     * different results in one Redis entry and under one runtime override. Including the
+     * package and the parameter types makes the derived namespace unique by construction,
+     * so overloads simply work rather than having to be disambiguated by hand.
+     *
+     * <p>The cost is longer keys. They stay readable in redis-cli, which matters more than
+     * being short, and a method's namespace is stable: it changes only when its own
+     * signature does.
      *
      * <p>An explicitly written namespace is left alone even when two methods share it. That
      * is someone deliberately pointing two methods at one entry, which is their call to
-     * make; only the accidental version is an error.
+     * make; only the accidental version is an error. The check below is a backstop that
+     * should now be unreachable for derived namespaces.
      */
     private String namespace(String resolved, Method method) {
         if (!resolved.isBlank()) {
             return resolved;
         }
-        String derived = method.getDeclaringClass().getSimpleName() + "." + method.getName();
+        String derived = signature(method);
         Method owner = derivedNamespaceOwners.putIfAbsent(derived, method);
         if (owner != null && !owner.equals(method)) {
-            throw new IllegalStateException("@Coalesce on " + describeMethod(method)
-                    + " derives the namespace \"" + derived + "\", which " + describeMethod(owner)
-                    + " already uses. They would share one Redis entry and serve each other's"
-                    + " results. Give at least one of them an explicit namespace.");
+            throw new IllegalStateException("@Coalesce on " + derived
+                    + " derives a namespace that " + signature(owner) + " already uses. They"
+                    + " would share one Redis entry and serve each other's results. Give at"
+                    + " least one of them an explicit namespace.");
         }
         return derived;
     }
 
-    private static String describeMethod(Method method) {
+    /** Fully qualified class, method name and parameter types: unique for any one method. */
+    private static String signature(Method method) {
         StringBuilder types = new StringBuilder();
         for (Class<?> parameter : method.getParameterTypes()) {
-            types.append(types.isEmpty() ? "" : ", ").append(parameter.getSimpleName());
+            types.append(types.isEmpty() ? "" : ",").append(parameter.getSimpleName());
         }
         return method.getDeclaringClass().getName() + "." + method.getName() + "(" + types + ")";
     }

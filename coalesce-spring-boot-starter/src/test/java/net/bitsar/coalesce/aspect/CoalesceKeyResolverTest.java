@@ -15,6 +15,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /** Pure key-derivation tests: no Redis, no reactive chain. */
 class CoalesceKeyResolverTest {
 
+    private static final String SAMPLE = Sample.class.getName();
+
     private final CoalesceKeyResolver resolver = new CoalesceKeyResolver();
     // null value resolver: attributes are treated as literals, which is what these tests want.
     private final CoalesceAttributeResolver attributes = new CoalesceAttributeResolver(null);
@@ -100,10 +102,15 @@ class CoalesceKeyResolverTest {
         assertThat(key.chars().filter(c -> c == '}').count()).isEqualTo(1);
     }
 
+    /**
+     * The derived namespace carries the package and the parameter types, so overloads and
+     * same-named classes in different packages cannot land on one entry. An explicit
+     * namespace replaces all of it, which is how a long default gets shortened.
+     */
     @Test
-    void namespaceDefaultsToClassAndMethodAndIsOverridable() throws Exception {
+    void namespaceDefaultsToTheFullSignatureAndIsOverridable() throws Exception {
         assertThat(resolver.resolve(method("plain"), new Object[]{"A-1"}, attributes("plain"), HttpHeaders.EMPTY))
-                .isEqualTo("coalesce:{Sample.plain:A-1}");
+                .isEqualTo("coalesce:{" + SAMPLE + ".plain(String):A-1}");
         assertThat(resolver.resolve(method("namespaced"), new Object[]{"A-1"}, attributes("namespaced"), HttpHeaders.EMPTY))
                 .isEqualTo("coalesce:{orders.v2:A-1}");
     }
@@ -116,9 +123,9 @@ class CoalesceKeyResolverTest {
         String lock = CoalesceKeys.discriminate(key, "lock");
         String notify = CoalesceKeys.discriminate(key, "notify");
 
-        assertThat(state).isEqualTo("coalesce:state:{Sample.plain:A-1}");
-        assertThat(lock).isEqualTo("coalesce:lock:{Sample.plain:A-1}");
-        assertThat(notify).isEqualTo("coalesce:notify:{Sample.plain:A-1}");
+        assertThat(state).isEqualTo("coalesce:state:{" + SAMPLE + ".plain(String):A-1}");
+        assertThat(lock).isEqualTo("coalesce:lock:{" + SAMPLE + ".plain(String):A-1}");
+        assertThat(notify).isEqualTo("coalesce:notify:{" + SAMPLE + ".plain(String):A-1}");
 
         // Distinct Redis keys, or the bucket write clobbers the lock hash.
         assertThat(state).isNotEqualTo(lock).isNotEqualTo(notify);

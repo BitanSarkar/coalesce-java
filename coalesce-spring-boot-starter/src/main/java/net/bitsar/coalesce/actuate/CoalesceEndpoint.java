@@ -7,6 +7,7 @@ import net.bitsar.coalesce.toggle.CoalesceToggle;
 import org.springframework.boot.actuate.endpoint.annotation.Endpoint;
 import org.springframework.boot.actuate.endpoint.annotation.ReadOperation;
 import org.springframework.boot.actuate.endpoint.annotation.WriteOperation;
+import reactor.core.publisher.Mono;
 
 /**
  * Reads and flips the runtime kill switch, and reports the framework counters alongside it.
@@ -50,7 +51,7 @@ public class CoalesceEndpoint {
     }
 
     @ReadOperation
-    public Map<String, Object> status() {
+    public Mono<Map<String, Object>> status() {
         return describe();
     }
 
@@ -61,34 +62,36 @@ public class CoalesceEndpoint {
      * @return the new state, including the position this replaced
      */
     @WriteOperation
-    public Map<String, Object> setActive(Boolean active, String namespace) {
-        Map<String, Object> body;
+    public Mono<Map<String, Object>> setActive(Boolean active, String namespace) {
         if (namespace == null || namespace.isBlank()) {
             if (active == null) {
-                throw new IllegalArgumentException("active is required when no namespace is given");
+                return Mono.error(new IllegalArgumentException(
+                        "active is required when no namespace is given"));
             }
-            boolean previous = toggle.setActive(active);
-            body = describe();
-            body.put("previouslyActive", previous);
-        } else if (active == null) {
-            boolean removed = toggle.clearOverride(namespace);
-            body = describe();
-            body.put("namespace", namespace);
-            body.put("overrideCleared", removed);
-        } else {
-            boolean previous = toggle.setActive(namespace, active);
-            body = describe();
-            body.put("namespace", namespace);
-            body.put("previouslyActive", previous);
+            return toggle.setActive(active)
+                    .flatMap(previous -> describe().doOnNext(body -> body.put("previouslyActive", previous)));
         }
-        return body;
+        if (active == null) {
+            return toggle.clearOverride(namespace)
+                    .flatMap(removed -> describe().doOnNext(body -> {
+                        body.put("namespace", namespace);
+                        body.put("overrideCleared", removed);
+                    }));
+        }
+        return toggle.setActive(namespace, active)
+                .flatMap(previous -> describe().doOnNext(body -> {
+                    body.put("namespace", namespace);
+                    body.put("previouslyActive", previous);
+                }));
     }
 
-    private Map<String, Object> describe() {
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("active", toggle.isActive());
-        body.put("overrides", toggle.overrides());
-        body.putAll(metrics.snapshot());
-        return body;
+    private Mono<Map<String, Object>> describe() {
+        return Mono.zip(toggle.isActive(), toggle.overrides()).map(both -> {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("active", both.getT1());
+            body.put("overrides", both.getT2());
+            body.putAll(metrics.snapshot());
+            return body;
+        });
     }
 }

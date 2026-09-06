@@ -133,7 +133,7 @@ class CoalesceAttributeResolverTest {
         assertThat(attrs.waitTimeout()).isEqualTo(Duration.ofSeconds(45));
         // A blank attribute no longer stays blank: the effective namespace is derived
         // here so the key and the runtime toggle are built from the same string.
-        assertThat(attrs.namespace()).isEqualTo("Sample.defaults");
+        assertThat(attrs.namespace()).endsWith("Sample.defaults(String)");
         assertThat(attrs.headerKeys()).isEmpty();
     }
 
@@ -287,23 +287,29 @@ class CoalesceAttributeResolverTest {
     // ---------- namespace collisions ----------
 
     /**
-     * The derived namespace is ClassSimpleName.methodName, which overloads share. Left
-     * alone they would name one Redis entry and serve each other's results, so the second
-     * one to resolve is refused.
+     * Overloads share a class and a method name, so a namespace built from those alone
+     * would put two different results in one Redis entry. The parameter types keep them
+     * apart, which means overloads work with no annotation changes at all.
      */
     @Test
-    void overloadsCannotSilentlyShareADerivedNamespace() throws Exception {
+    void overloadsGetDistinctNamespacesWithoutBeingDisambiguatedByHand() throws Exception {
         CoalesceAttributeResolver resolver = new CoalesceAttributeResolver(null);
         Method one = Sample.class.getDeclaredMethod("defaults", String.class);
         Method overload = Sample.class.getDeclaredMethod("defaults", String.class, boolean.class);
 
-        resolver.resolve(one, one.getAnnotation(Coalesce.class));
+        String first = resolver.resolve(one, one.getAnnotation(Coalesce.class)).namespace();
+        String second = resolver.resolve(overload, overload.getAnnotation(Coalesce.class)).namespace();
 
-        assertThatThrownBy(() -> resolver.resolve(overload, overload.getAnnotation(Coalesce.class)))
-                .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("Sample.defaults")
-                .hasMessageContaining("serve each other's results")
-                .hasMessageContaining("explicit namespace");
+        assertThat(first).endsWith("Sample.defaults(String)");
+        assertThat(second).endsWith("Sample.defaults(String,boolean)");
+        assertThat(first).isNotEqualTo(second);
+    }
+
+    /** The package is included too, so two classes with the same simple name stay apart. */
+    @Test
+    void theDerivedNamespaceIsFullyQualified() throws Exception {
+        assertThat(resolve("literals", Map.of()).namespace())
+                .startsWith("net.bitsar.coalesce.annotation.CoalesceAttributeResolverTest$Sample.");
     }
 
     /** Resolving the same method twice is a cache hit, not a collision with itself. */
@@ -335,6 +341,6 @@ class CoalesceAttributeResolverTest {
     /** The derived namespace is what both the Redis key and the runtime toggle are built on. */
     @Test
     void aBlankNamespaceIsDerivedFromTheMethod() throws Exception {
-        assertThat(resolve("literals", Map.of()).namespace()).isEqualTo("Sample.literals");
+        assertThat(resolve("literals", Map.of()).namespace()).endsWith("Sample.literals(String)");
     }
 }
