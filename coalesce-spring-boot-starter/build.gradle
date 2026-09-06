@@ -30,6 +30,11 @@ dependencies {
     implementation 'org.aspectj:aspectjweaver'
     implementation 'org.slf4j:slf4j-api'
 
+    // Optional: the /actuator/coalesce endpoint is only registered when an application
+    // brings Actuator itself. compileOnly keeps it off every consumer's dependency graph.
+    compileOnly 'org.springframework.boot:spring-boot-actuator'
+    compileOnly 'org.springframework.boot:spring-boot-actuator-autoconfigure'
+
     // Auto-configuration is the whole point of the "starter" suffix, so it is api: a
     // consumer's Boot app must see the same spring-boot-autoconfigure this was built against.
     api 'org.springframework.boot:spring-boot-autoconfigure'
@@ -42,6 +47,8 @@ dependencies {
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
     testImplementation 'io.projectreactor:reactor-test'
+    // On the test classpath only, so the Actuator endpoint's auto-configuration is exercised.
+    testImplementation 'org.springframework.boot:spring-boot-starter-actuator'
     // Gradle ships its own junit-platform-launcher, older than the engine this BOM pins.
     // Declaring it here lets the BOM align the two; without it, discovery fails outright.
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

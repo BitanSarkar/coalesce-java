@@ -98,6 +98,22 @@ class CoalesceAttributeResolverTest {
         Mono<String> freshEqualToStale(String id) {
             return Mono.empty();
         }
+
+        // An overload: same class, same method name, so the same derived namespace.
+        @Coalesce(key = "#id")
+        Mono<String> defaults(String id, boolean full) {
+            return Mono.empty();
+        }
+
+        @Coalesce(key = "#id", namespace = "shared")
+        Mono<String> explicitlyShared(String id) {
+            return Mono.empty();
+        }
+
+        @Coalesce(key = "#id", namespace = "shared")
+        Mono<String> alsoExplicitlyShared(String id) {
+            return Mono.empty();
+        }
     }
 
     private CoalesceAttributes resolve(String method, Map<String, String> properties) throws Exception {
@@ -115,7 +131,9 @@ class CoalesceAttributeResolverTest {
         assertThat(attrs.staleTtl()).isEqualTo(Duration.ofSeconds(60));
         assertThat(attrs.pendingTtl()).isEqualTo(Duration.ofSeconds(30));
         assertThat(attrs.waitTimeout()).isEqualTo(Duration.ofSeconds(45));
-        assertThat(attrs.namespace()).isEmpty();
+        // A blank attribute no longer stays blank: the effective namespace is derived
+        // here so the key and the runtime toggle are built from the same string.
+        assertThat(attrs.namespace()).endsWith("Sample.defaults(String)");
         assertThat(attrs.headerKeys()).isEmpty();
     }
 
@@ -264,5 +282,65 @@ class CoalesceAttributeResolverTest {
     void freshTtlEqualToStaleTtlIsAllowed() throws Exception {
         CoalesceAttributes attrs = resolve("freshEqualToStale", Map.of());
         assertThat(attrs.freshTtl()).isEqualTo(attrs.staleTtl());
+    }
+
+    // ---------- namespace collisions ----------
+
+    /**
+     * Overloads share a class and a method name, so a namespace built from those alone
+     * would put two different results in one Redis entry. The parameter types keep them
+     * apart, which means overloads work with no annotation changes at all.
+     */
+    @Test
+    void overloadsGetDistinctNamespacesWithoutBeingDisambiguatedByHand() throws Exception {
+        CoalesceAttributeResolver resolver = new CoalesceAttributeResolver(null);
+        Method one = Sample.class.getDeclaredMethod("defaults", String.class);
+        Method overload = Sample.class.getDeclaredMethod("defaults", String.class, boolean.class);
+
+        String first = resolver.resolve(one, one.getAnnotation(Coalesce.class)).namespace();
+        String second = resolver.resolve(overload, overload.getAnnotation(Coalesce.class)).namespace();
+
+        assertThat(first).endsWith("Sample.defaults(String)");
+        assertThat(second).endsWith("Sample.defaults(String,boolean)");
+        assertThat(first).isNotEqualTo(second);
+    }
+
+    /** The package is included too, so two classes with the same simple name stay apart. */
+    @Test
+    void theDerivedNamespaceIsFullyQualified() throws Exception {
+        assertThat(resolve("literals", Map.of()).namespace())
+                .startsWith("net.bitsar.coalesce.annotation.CoalesceAttributeResolverTest$Sample.");
+    }
+
+    /** Resolving the same method twice is a cache hit, not a collision with itself. */
+    @Test
+    void resolvingOneMethodRepeatedlyIsNotACollision() throws Exception {
+        CoalesceAttributeResolver resolver = new CoalesceAttributeResolver(null);
+        Method m = Sample.class.getDeclaredMethod("defaults", String.class);
+
+        CoalesceAttributes first = resolver.resolve(m, m.getAnnotation(Coalesce.class));
+        CoalesceAttributes second = resolver.resolve(m, m.getAnnotation(Coalesce.class));
+
+        assertThat(second).isSameAs(first);
+    }
+
+    /**
+     * Two methods pointed at one namespace on purpose is someone deliberately sharing an
+     * entry, which is their call. Only the accidental version is an error.
+     */
+    @Test
+    void anExplicitNamespaceMayBeSharedDeliberately() throws Exception {
+        CoalesceAttributeResolver resolver = new CoalesceAttributeResolver(null);
+        Method one = Sample.class.getDeclaredMethod("explicitlyShared", String.class);
+        Method two = Sample.class.getDeclaredMethod("alsoExplicitlyShared", String.class);
+
+        assertThat(resolver.resolve(one, one.getAnnotation(Coalesce.class)).namespace()).isEqualTo("shared");
+        assertThat(resolver.resolve(two, two.getAnnotation(Coalesce.class)).namespace()).isEqualTo("shared");
+    }
+
+    /** The derived namespace is what both the Redis key and the runtime toggle are built on. */
+    @Test
+    void aBlankNamespaceIsDerivedFromTheMethod() throws Exception {
+        assertThat(resolve("literals", Map.of()).namespace()).endsWith("Sample.literals(String)");
     }
 }

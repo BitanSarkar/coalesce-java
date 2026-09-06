@@ -433,8 +433,13 @@ making every pod compute the byte-identical string for the same logical call:
   trimmed.
 - If hashing a whole payload, serialize it canonically first: two JSON encodings of the
   same object with different property order hash differently.
-- Namespace defaults to `ClassSimpleName.methodName`, so the same key value used by two
-  methods cannot collide.
+- Namespace defaults to the method's full signature,
+  `com.acme.OrderService.getOrder(String)`. The shorter `ClassSimpleName.methodName` would
+  not be unique: overloads share a method name, and two classes in different packages share
+  a simple name, so either shape would put two different results in one Redis entry. The
+  package and parameter types make it unique by construction, so overloads work with no
+  annotation changes. Set `namespace` explicitly to shorten it. Two methods sharing an
+  explicit namespace is left alone, since that is someone choosing to share an entry.
 
 ### Envelope format
 
@@ -461,6 +466,13 @@ value look freshly computed, and background refresh never fires at all.
 
 The hit path being one round trip is why this pays off on a warm key, and the five-trip
 cold path is why it is a bad deal when every key is unique.
+
+**Every path costs one more than the table says**, because the runtime kill switch is read
+through on each invocation, so a cache hit is really two round trips. The figures above are
+the coalescing path's own cost, and the measured runs quoted earlier in this README were
+taken before the switch existed. See
+[Turning it off at runtime](#turning-it-off-at-runtime) for why it is read rather than
+cached, and what would remove the cost.
 
 ---
 
@@ -605,6 +617,7 @@ attribute in the message.
 ```yaml
 coalesce:
   enabled: true                 # false disables the aspect entirely; nothing touches Redis
+  active: true                  # starting position of the runtime kill switch, see below
   # Results larger than this are returned to the caller but never written to Redis.
   max-payload-bytes: 1048576
   redis:
@@ -691,6 +704,98 @@ bean. Every `coalesce.redis.*` key is ignored when you do.
 The starter ships `spring-configuration-metadata.json`, so all of these get completion and
 inline documentation in an IDE.
 
+### Turning it off at runtime
+
+`coalesce.enabled: false` removes the beans at startup. That is the wrong tool during an
+incident, because it needs a deploy, and a coalescing layer sits in front of a dependency
+precisely when that dependency is in trouble.
+
+`CoalesceToggle` is a switch on beans that already exist. Turning it off makes annotated
+methods behave as if the annotation were not there: the aspect calls straight through and
+nothing touches Redis, not even to read. It takes effect on the next invocation.
+
+```java
+@Autowired CoalesceToggle toggle;
+
+toggle.setActive(false).subscribe();   // everything, the big red button
+```
+
+Usually one dependency is sick and the rest are fine, and switching the whole application
+off would strip the shield from every healthy downstream still being protected. Scope it to
+one method instead:
+
+```java
+toggle.setActive("com.acme.OrderService.getOrder(String)", false).subscribe();
+toggle.clearOverride("com.acme.OrderService.getOrder(String)").subscribe();
+```
+
+The namespace is the same string that names the method's Redis entries: the `namespace`
+attribute when set, otherwise the method's full signature. Both calls return the position
+they replaced.
+
+**The switch lives in Redis, not in a field.** A pod-local switch would only affect the one
+pod the load balancer happened to route the request to, leaving every other pod coalescing
+while the operator believed otherwise. Every pod reads the same state, so one call moves
+the fleet, and every operation is reactive because reading it is a Redis call.
+
+The cost is a round trip: the switch is read through on every annotated invocation, so a
+cache hit is **two** round trips rather than one. That buys agreement across pods with no
+propagation delay and nothing to reconcile. Caching it locally and invalidating over
+pub/sub would remove the cost, and `CoalesceToggle` is an interface so that implementation
+drops in without the aspect changing.
+
+Nothing is written at startup, so pods cannot race to seed it: an unset switch falls back
+to `coalesce.active`, and a namespace with no override of its own follows the global
+switch. If Redis cannot be read the switch reports active, which keeps a Redis outage
+behaving exactly as it did before the switch existed. The corollary is that the switch
+itself is not reliably reachable during an outage.
+
+The global switch wins: while it is off everything is bypassed regardless of any override,
+so the big red button cannot be undermined by a stale per-method setting.
+
+`coalesce.active` sets where it starts, and defaults to true. Declare your own
+`CoalesceToggle` bean to start it from somewhere else, such as a feature-flag service.
+
+With Actuator on the classpath there is an endpoint, which has to be exposed before it
+appears:
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: coalesce
+```
+
+```bash
+curl localhost:8080/actuator/coalesce
+# {"active":true,"overrides":{},"leaderExecutions":41,"cacheHits":1180, ...}
+
+# everything
+curl -X POST localhost:8080/actuator/coalesce \
+     -H 'Content-Type: application/json' -d '{"active": false}'
+
+# one namespace
+curl -X POST localhost:8080/actuator/coalesce \
+     -H 'Content-Type: application/json' \
+     -d '{"namespace": "OrderService.getOrder", "active": false}'
+
+# drop the override again
+curl -X POST localhost:8080/actuator/coalesce \
+     -H 'Content-Type: application/json' \
+     -d '{"namespace": "OrderService.getOrder", "active": null}'
+```
+
+The counters come back alongside the switch because the question anyone flipping it
+actually has is whether coalescing is helping, which
+`(cacheHits + followerWaits) / requests` answers and the switch position does not. This is
+a write endpoint that disables a production safeguard, so secure it as one.
+
+A method whose TTLs do not validate can still be bypassed: when attribute resolution
+fails there is no namespace to look up, so only the global switch is consulted, and if it
+is off the call goes straight through instead of failing. Taking the framework out of the
+path includes taking it out of its own configuration errors.
+
 ### Getting headers into the key
 
 WebFlux hops event-loop threads, so there is no thread-local request; `RequestContextHolder`
@@ -725,6 +830,7 @@ the key *inside* `deferContextual` rather than eagerly.
 | `leaderTakeovers` | waiters that claimed an expired lease; crash recovery firing |
 | `timeouts` | `CoalesceTimeoutException` raised; should be rare |
 | `payloadsTooLarge` | results computed but deliberately not cached |
+| `bypassed` | calls that ran straight through because the runtime switch is off |
 
 The canary is `(cacheHits + followerWaits) / requests`. Near zero means the framework is
 pure overhead on that endpoint. No interpretation needed, turn it off there.

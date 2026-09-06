@@ -80,11 +80,9 @@ public class CoalesceKeyResolver {
                     .collect(Collectors.joining("|"));
         }
 
-        String namespace = attrs.namespace().isEmpty()
-                ? method.getDeclaringClass().getSimpleName() + "." + method.getName()
-                : attrs.namespace();
-
-        String raw = namespace + ":" + base + (headerPart.isEmpty() ? "" : ":" + headerPart);
+        // Already the effective namespace: CoalesceAttributeResolver derives it once, so
+        // the key and the runtime toggle cannot disagree about what this method is called.
+        String raw = attrs.namespace() + ":" + base + (headerPart.isEmpty() ? "" : ":" + headerPart);
         // The {} hash tag is REQUIRED for Redis Cluster and must be applied from the very
         // first implementation — retrofitting it invalidates every key already in flight.
         return CoalesceKeys.KEY_PREFIX + "{" + raw + "}";

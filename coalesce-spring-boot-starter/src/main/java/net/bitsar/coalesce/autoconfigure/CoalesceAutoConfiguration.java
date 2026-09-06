@@ -10,6 +10,9 @@ import net.bitsar.coalesce.codec.JsonCoalesceCodec;
 import net.bitsar.coalesce.coordinator.CoalesceCoordinator;
 import net.bitsar.coalesce.coordinator.RedissonCoalesceCoordinator;
 import net.bitsar.coalesce.metrics.CoalesceMetrics;
+import net.bitsar.coalesce.core.CoalesceKeys;
+import net.bitsar.coalesce.toggle.CoalesceToggle;
+import net.bitsar.coalesce.toggle.RedisCoalesceToggle;
 import org.aspectj.lang.annotation.Aspect;
 import org.redisson.api.RedissonReactiveClient;
 import org.springframework.beans.factory.ObjectProvider;
@@ -114,6 +117,18 @@ public class CoalesceAutoConfiguration {
      * @param properties        the {@code coalesce.*} settings
      * @return the aspect that intercepts {@code @Coalesce} methods
      */
+    /**
+     * The runtime kill switch, held in Redis so one call moves the whole fleet rather than
+     * the single pod a load balancer happened to route to. Declare your own bean to drive
+     * it from somewhere else, such as a feature-flag service.
+     */
+    @Bean
+    @ConditionalOnBean(RedissonReactiveClient.class)
+    @ConditionalOnMissingBean
+    public CoalesceToggle coalesceToggle(RedissonReactiveClient redisson, CoalesceProperties properties) {
+        return new RedisCoalesceToggle(redisson, CoalesceKeys.KEY_PREFIX + "toggle", properties.isActive());
+    }
+
     @Bean
     @ConditionalOnBean(CoalesceCoordinator.class)
     @ConditionalOnMissingBean
@@ -122,8 +137,9 @@ public class CoalesceAutoConfiguration {
                                          CoalesceMetrics metrics,
                                          CoalesceKeyResolver keyResolver,
                                          CoalesceAttributeResolver attributeResolver,
+                                         CoalesceToggle toggle,
                                          CoalesceProperties properties) {
         return new CoalesceAspect(coordinator, codec, metrics, keyResolver, attributeResolver,
-                properties.getMaxPayloadBytes());
+                toggle, properties.getMaxPayloadBytes());
     }
 }

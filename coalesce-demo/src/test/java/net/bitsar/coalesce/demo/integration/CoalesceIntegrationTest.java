@@ -6,6 +6,7 @@ import net.bitsar.coalesce.demo.Mode;
 import net.bitsar.coalesce.demo.OrderDto;
 import net.bitsar.coalesce.demo.OrderService;
 import net.bitsar.coalesce.metrics.CoalesceMetrics;
+import net.bitsar.coalesce.toggle.CoalesceToggle;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIf;
@@ -51,6 +52,9 @@ class CoalesceIntegrationTest {
     CoalesceMetrics metrics;
 
     @Autowired
+    CoalesceToggle toggle;
+
+    @Autowired
     SwrProbe swr;
 
     @Autowired
@@ -68,6 +72,89 @@ class CoalesceIntegrationTest {
 
     private long executions() {
         return (long) demoMetrics.snapshot(Mode.COALESCED).get("downstreamExecutions");
+    }
+
+    // ---------- the runtime kill switch ----------
+
+    /**
+     * The switch has to be worth reaching for during an incident, which means it must take
+     * the framework out of the path completely rather than merely stop caching. Twenty
+     * concurrent callers that would otherwise share one execution each run their own.
+     */
+    @Test
+    void switchingTheToggleOffStopsCoalescingWithoutARestart() {
+        int bucket = 21;
+        toggle.setActive(false).block(LIMIT);
+        try {
+            List<List<OrderDto>> results = Flux.range(0, 20)
+                    .flatMap(i -> orders.loadCoalesced(bucket))
+                    .collectList()
+                    .block(LIMIT);
+
+            assertThat(results).hasSize(20);
+            assertThat(executions()).isEqualTo(20);
+            // Nothing was read from or written to Redis on any of those calls.
+            assertThat(metrics.snapshot()).containsEntry("cacheHits", 0L)
+                    .containsEntry("followerWaits", 0L)
+                    .containsEntry("leaderExecutions", 0L)
+                    .containsEntry("bypassed", 20L);
+        } finally {
+            toggle.setActive(true).block(LIMIT);
+        }
+    }
+
+    /**
+     * The case the global switch cannot serve: one dependency is sick and the rest are
+     * fine. Bypassing that namespace alone leaves every other annotated method shielded.
+     */
+    @Test
+    void oneNamespaceCanBeBypassedWhileTheRestKeepCoalescing() {
+        // The derived namespace is the full signature, so build it from the method rather
+        // than hardcoding a string that would drift the moment the signature changes.
+        String namespace = OrderService.class.getName() + ".loadCoalesced(int)";
+        toggle.setActive(namespace, false).block(LIMIT);
+        try {
+            List<List<OrderDto>> bypassed = Flux.range(0, 10)
+                    .flatMap(i -> orders.loadCoalesced(23))
+                    .collectList()
+                    .block(LIMIT);
+
+            assertThat(bypassed).hasSize(10);
+            assertThat(executions()).isEqualTo(10);
+
+            // A different namespace is untouched and still coalesces to one execution.
+            swr.resetRuns();
+            // One id shared by all ten callers: a fresh id per call would be ten distinct
+            // keys and would prove nothing about coalescing.
+            String id = "untouched-" + UUID.randomUUID();
+            List<String> shielded = Flux.range(0, 10)
+                    .flatMap(i -> swr.value(id))
+                    .collectList()
+                    .block(LIMIT);
+            assertThat(shielded).hasSize(10);
+            assertThat(swr.runs()).isEqualTo(1);
+        } finally {
+            toggle.clearOverride(namespace).block(LIMIT);
+        }
+    }
+
+    /** And switching it back on resumes coalescing on the very next call. */
+    @Test
+    void switchingItBackOnResumesCoalescing() {
+        int bucket = 22;
+        toggle.setActive(false).block(LIMIT);
+        orders.loadCoalesced(bucket).block(LIMIT);
+        toggle.setActive(true).block(LIMIT);
+
+        List<List<OrderDto>> results = Flux.range(0, 10)
+                .flatMap(i -> orders.loadCoalesced(bucket))
+                .collectList()
+                .block(LIMIT);
+
+        assertThat(results).hasSize(10);
+        // One bypassed call plus exactly one coalesced execution for the ten that followed.
+        assertThat(executions()).isEqualTo(2);
+        assertThat(metrics.snapshot()).containsEntry("bypassed", 1L);
     }
 
     @Test

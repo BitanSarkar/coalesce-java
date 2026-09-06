@@ -8,6 +8,7 @@ import net.bitsar.coalesce.coordinator.CoalesceCoordinator;
 import net.bitsar.coalesce.core.CoalesceState;
 import net.bitsar.coalesce.exception.CoalesceTimeoutException;
 import net.bitsar.coalesce.metrics.CoalesceMetrics;
+import net.bitsar.coalesce.toggle.CoalesceToggle;
 import net.bitsar.coalesce.web.HeaderCaptureFilter;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
@@ -44,6 +45,7 @@ public class CoalesceAspect {
     private final CoalesceMetrics metrics;
     private final CoalesceKeyResolver keyResolver;
     private final CoalesceAttributeResolver attributeResolver;
+    private final CoalesceToggle toggle;
 
     /**
      * Refuse to cache anything larger than this. Redisson buffers each command in Netty's
@@ -58,12 +60,14 @@ public class CoalesceAspect {
                           CoalesceMetrics metrics,
                           CoalesceKeyResolver keyResolver,
                           CoalesceAttributeResolver attributeResolver,
+                          CoalesceToggle toggle,
                           int maxPayloadBytes) {
         this.coordinator = coordinator;
         this.codec = codec;
         this.metrics = metrics;
         this.keyResolver = keyResolver;
         this.attributeResolver = attributeResolver;
+        this.toggle = toggle;
         this.maxPayloadBytes = maxPayloadBytes;
     }
 
@@ -79,22 +83,80 @@ public class CoalesceAspect {
         MethodSignature sig = (MethodSignature) pjp.getSignature();
         Class<?> returnType = sig.getMethod().getReturnType();
 
-        // The key is resolved INSIDE deferContextual: header values live in the Reactor
-        // Context, which is only visible once inside the reactive chain.
-        // Placeholders resolve once per method and are cached, so this is a map lookup.
-        CoalesceAttributes attrs = attributeResolver.resolve(sig.getMethod(), coalesce);
-
+        // Everything happens INSIDE deferContextual. Header values live in the Reactor
+        // Context, which is only visible once inside the reactive chain, and the kill
+        // switch is read from Redis, which cannot block an event-loop thread.
         if (Flux.class.isAssignableFrom(returnType)) {
-            return Flux.deferContextual(ctx -> {
-                Invocation inv = new Invocation(pjp, attrs, sig, resolveKey(pjp, attrs, ctx), true);
-                return coalesce(inv).flatMapMany(list -> Flux.fromIterable(asList(list)));
-            });
+            return Flux.deferContextual(ctx -> gate(pjp, sig, coalesce).flatMapMany(gate -> gate
+                    .map(attrs -> coalesce(new Invocation(pjp, attrs, sig, resolveKey(pjp, attrs, ctx), true))
+                            .flatMapMany(list -> Flux.fromIterable(asList(list))))
+                    // Bypassed: hand back the target's own Flux rather than the collected
+                    // List the coalescing path builds, so streaming stays streaming.
+                    .orElseGet(() -> proceedFlux(pjp))));
         }
         if (Mono.class.isAssignableFrom(returnType)) {
-            return Mono.deferContextual(ctx ->
-                    coalesce(new Invocation(pjp, attrs, sig, resolveKey(pjp, attrs, ctx), false)));
+            return Mono.deferContextual(ctx -> gate(pjp, sig, coalesce).flatMap(gate -> gate
+                    .map(attrs -> coalesce(new Invocation(pjp, attrs, sig, resolveKey(pjp, attrs, ctx), false)))
+                    .orElseGet(() -> proceedMono(pjp))));
         }
         throw new IllegalStateException("@Coalesce only supports Mono/Flux return types, got " + returnType);
+    }
+
+    /**
+     * Consults the kill switch for this invocation.
+     *
+     * @return the resolved attributes to coalesce with, or empty to call straight through.
+     *         Empty is carried in an Optional rather than as an empty Mono because an
+     *         annotated method may legitimately return an empty Mono, and the two must not
+     *         be confused: mistaking one for the other would invoke the target twice.
+     */
+    private Mono<Optional<CoalesceAttributes>> gate(ProceedingJoinPoint pjp, MethodSignature sig, Coalesce coalesce) {
+        CoalesceAttributes attrs;
+        try {
+            // Placeholders resolve once per method and are cached, so this is a map lookup.
+            attrs = attributeResolver.resolve(sig.getMethod(), coalesce);
+        } catch (RuntimeException configError) {
+            // No namespace to consult, so only the global switch can decide. Bypassed means
+            // bypassed, including out of the framework's own configuration errors: a broken
+            // TTL must not fail a request that the operator has already taken it out of.
+            return toggle.isActive().flatMap(active -> {
+                if (active) {
+                    return Mono.error(configError);
+                }
+                metrics.bypass();
+                return Mono.just(Optional.empty());
+            });
+        }
+        CoalesceAttributes resolved = attrs;
+        return toggle.isActive(resolved.namespace()).map(active -> {
+            if (active) {
+                return Optional.of(resolved);
+            }
+            metrics.bypass();
+            return Optional.empty();
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private Mono<Object> proceedMono(ProceedingJoinPoint pjp) {
+        return Mono.defer(() -> {
+            try {
+                return (Mono<Object>) pjp.proceed();
+            } catch (Throwable t) {
+                return Mono.error(t);
+            }
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private Flux<Object> proceedFlux(ProceedingJoinPoint pjp) {
+        return Flux.defer(() -> {
+            try {
+                return (Flux<Object>) pjp.proceed();
+            } catch (Throwable t) {
+                return Flux.error(t);
+            }
+        });
     }
 
     @SuppressWarnings("unchecked")
