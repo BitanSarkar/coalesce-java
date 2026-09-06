@@ -1,4 +1,4 @@
-# Coordinator, Codec, and Spring Boot Wiring
+# Coordinator, codec, and Spring Boot wiring
 
 ## `CoalesceState`
 
@@ -23,7 +23,7 @@ public record CoalesceState(Status status, byte[] payload, String errorMessage, 
 }
 ```
 
-## `CoalesceCodec` — pluggable wire format
+## `CoalesceCodec`: pluggable wire format
 
 ```java
 package net.bitsar.coalesce;
@@ -75,8 +75,8 @@ public class JsonCoalesceCodec implements CoalesceCodec {
 }
 ```
 
-Do **not** use Java native serialization (`ObjectOutputStream`, Redisson's default
-`SerializationCodec`) here — it requires every cached DTO to implement `Serializable`,
+Do not use Java native serialization (`ObjectOutputStream`, Redisson's default
+`SerializationCodec`) here. It requires every cached DTO to implement `Serializable`,
 breaks across rolling deploys when a class shape changes while old and new pods share
 one Redis, and deserializing untrusted bytes is a known RCE vector.
 
@@ -113,7 +113,7 @@ public class RedissonCoalesceCoordinator {
 
     public Mono<Void> release(String key, long lockId) {
         return redisson.getLock(key).unlock(lockId)
-            .onErrorResume(e -> Mono.empty()); // already expired / already released — not fatal
+            .onErrorResume(e -> Mono.empty()); // already expired / already released, not fatal
     }
 
     public Mono<Void> markDone(String key, byte[] payload, Duration ttl) {
@@ -130,7 +130,7 @@ public class RedissonCoalesceCoordinator {
             .then(topic(key).publish("FAILED"))
             .then();
         // NOTE: real implementation should encode status separately from payload
-        // (e.g. a one-byte status prefix) rather than string-sniffing — simplified
+        // (e.g. a one-byte status prefix) rather than string-sniffing. Simplified
         // here for POC readability. See "open decisions" in 06-implementation-checklist.md.
     }
 
@@ -152,13 +152,13 @@ public class RedissonCoalesceCoordinator {
     }
 
     private RTopicReactive topic(String key) {
-        // use getShardedTopic(key, ...) instead on Redis 7+ Cluster — see 05-cluster-considerations.md
+        // use getShardedTopic(key, ...) instead on Redis 7+ Cluster, see 05-cluster-considerations.md
         return redisson.getTopic("notify:" + key);
     }
 
     private CoalesceState decodeState(byte[] raw) {
-        // placeholder decode matching the simplified markFailed above — replace with a
-        // real envelope format before anything beyond the POC stage.
+        // placeholder decode matching the simplified markFailed above. Replace it with
+        // a real envelope format before anything beyond the POC stage.
         String asString = new String(raw);
         if (asString.startsWith("FAILED:")) {
             return CoalesceState.failed(asString.substring(7));
@@ -168,8 +168,8 @@ public class RedissonCoalesceCoordinator {
 }
 ```
 
-**Flag for the POC**: the `markFailed`/`decodeState` pairing above is a placeholder —
-string-sniffing bytes to detect FAILED vs DONE is fragile the moment a real payload
+**Flag for the POC**: the `markFailed`/`decodeState` pairing above is a placeholder.
+String-sniffing bytes to detect FAILED vs DONE is fragile the moment a real payload
 could itself start with `"FAILED:"`. Before this goes past a POC, replace it with a
 proper envelope: a fixed-size status prefix (e.g. one byte: `0=DONE, 1=FAILED`)
 followed by the actual payload bytes, decoded explicitly rather than sniffed.
@@ -206,7 +206,7 @@ public class RedissonConfig {
 
         // For Redis Cluster instead of single-server:
         // config.useClusterServers()
-        //     .setReadMode(ReadMode.MASTER) // required — see 05-cluster-considerations.md
+        //     .setReadMode(ReadMode.MASTER) // required, see 05-cluster-considerations.md
         //     .addNodeAddress(scheme + "node1:6379", scheme + "node2:6379", ...);
 
         return Redisson.create(config);
@@ -219,7 +219,7 @@ public class RedissonConfig {
 }
 ```
 
-This is a separate client from any existing `ReactiveRedisTemplate`/Lettuce setup —
-they coexist fine, just size both connection pools with your Redis instance's
+This is a separate client from any existing `ReactiveRedisTemplate`/Lettuce setup.
+They coexist fine, just size both connection pools with your Redis instance's
 connection cap in mind, and keep the `coalesce:` key prefix exclusive to this
 framework so the two clients never write conflicting formats to the same key.

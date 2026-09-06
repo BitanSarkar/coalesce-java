@@ -9,15 +9,15 @@ Distributed reactive call coalescing with stale-while-revalidate, for Spring Web
 
 Put `@Coalesce` on a `Mono`- or `Flux`-returning method and three things happen:
 
-1. **Concurrent callers share one execution.** If the same logical call is already in
-   flight anywhere in the cluster, later callers wait for it and reuse the result rather
-   than re-executing.
-2. **The result is cached** for a configurable window, acting as a TPS shield in front of
-   a slow or expensive dependency.
-3. **Stale data is refreshed in the background.** Callers get an instant response from the
-   last known-good value while at most one call quietly refreshes it.
+1. Concurrent callers share one execution. If the same logical call is already in flight
+   anywhere in the cluster, later callers wait for it and reuse the result rather than
+   re-executing.
+2. The result is cached for a configurable window, acting as a TPS shield in front of a
+   slow or expensive dependency.
+3. Stale data is refreshed in the background. Callers get an instant response from the
+   last known-good value while at most one call refreshes it.
 
-It is **global-only**: there is no per-pod in-memory tier. All coordination state lives in
+It is global-only: there is no per-pod in-memory tier. All coordination state lives in
 Redis via Redisson, so every pod is stateless with respect to coalescing and
 interchangeable at any time.
 
@@ -40,9 +40,9 @@ public Mono<OrderDto> getOrder(String orderId) {
 
 - [Installation](#installation)
 - [Quick start](#quick-start)
-- [When to use it](#when-to-use-it) — and the arithmetic that decides
+- [When to use it](#when-to-use-it), and the arithmetic that decides
 - [When not to use it](#when-not-to-use-it)
-- [How it works](#how-it-works) — flow diagrams
+- [How it works](#how-it-works): flow diagrams
 - [The four TTL parameters](#the-four-ttl-parameters)
 - [Configuration reference](#configuration-reference)
 - [Metrics and what to watch](#metrics-and-what-to-watch)
@@ -71,8 +71,8 @@ Maven:
 </dependency>
 ```
 
-Requires Java 17 and Spring Boot 3.2+. Everything wires itself through auto-configuration —
-there is nothing to `@Import` and no package to add to your component scan. Point it at a
+Requires Java 17 and Spring Boot 3.2+. Everything wires itself through auto-configuration.
+There is nothing to `@Import` and no package to add to your component scan. Point it at a
 Redis and annotate a method:
 
 ```yaml
@@ -96,8 +96,8 @@ tasks.withType(JavaCompile).configureEach {
 
 The starter builds a single-server `RedissonClient` from `coalesce.redis.*` only when the
 application has not declared one. Declare a `RedissonClient` or `RedissonReactiveClient`
-bean — from the Redisson Spring Boot starter, or by hand for cluster, sentinel or
-replicated topologies — and it is used unchanged. For Redis Cluster this is the only
+bean (from the Redisson Spring Boot starter, or by hand for cluster, sentinel or
+replicated topologies) and it is used unchanged. For Redis Cluster this is the only
 supported path, and `ReadMode.MASTER` is required: a stale read off a replica can show a
 follower a `FAILED` state for work that has already succeeded, and it will re-execute it.
 
@@ -154,8 +154,8 @@ Screening rule:
 
 | ratio | verdict |
 |---|---|
-| **< 2** | net loss — you add Redis round trips to save nothing |
-| **2 – 5** | marginal; only worth it if the downstream is genuinely expensive |
+| **< 2** | net loss: you add Redis round trips to save nothing |
+| **2 to 5** | marginal; only worth it if the downstream is genuinely expensive |
 | **> 10** | strong |
 
 **Key cardinality, not traffic volume, is the deciding variable.** In the runs above the
@@ -164,16 +164,16 @@ from 96% to nothing.
 
 ### Good fits
 
-- **Third-party APIs with rate limits or per-call billing.** 28× fewer calls is money, and
+- Third-party APIs with rate limits or per-call billing. 28× fewer calls is money, and
   quota exhaustion is a real outage.
-- **Shared reference data** — config, feature flags, catalogs, pricing tables, FX rates.
-- **Auth token fetches.** A client-credentials token is one key shared by every request in
-  the fleet; a textbook fit.
-- **Expensive aggregations** whose inputs change more slowly than they are read:
-  dashboards, leaderboards, "top N".
-- **Slow, capacity-constrained backends** — mainframe, legacy SOAP, a database that cannot
-  be scaled further.
-- **Thundering-herd shapes** — a hot item during a spike, or a cold cache after a deploy.
+- Shared reference data: config, feature flags, catalogs, pricing tables, FX rates.
+- Auth token fetches. A client-credentials token is one key shared by every request in the
+  fleet; a textbook fit.
+- Expensive aggregations whose inputs change more slowly than they are read: dashboards,
+  leaderboards, "top N".
+- Slow, capacity-constrained backends: mainframe, legacy SOAP, a database that cannot be
+  scaled further.
+- Thundering-herd shapes: a hot item during a spike, or a cold cache after a deploy.
 
 ### Two different benefits, two different drivers
 
@@ -182,13 +182,13 @@ Worth separating, because a run can deliver one and not the other:
 | | saves an execution | serves instantly |
 |---|---|---|
 | **fresh hit** (age < `freshTtl`) | yes | yes |
-| **stale hit** (age ≥ `freshTtl`) | no — triggers a refresh | yes |
-| **follower wait** | yes | no — waits for the leader |
+| **stale hit** (age ≥ `freshTtl`) | no: triggers a refresh | yes |
+| **follower wait** | yes | no: waits for the leader |
 
 A measured run with 7,665 cache hits produced only ~949 saved executions, because 6,716 of
-those hits were *stale* — instant for the caller, but each one still triggered a refresh.
-That run showed a **2.2× latency improvement alongside only a 1.1× load reduction**. If
-your goal is downstream load, watch `freshTtl`. If it is latency, stale hits are enough.
+those hits were *stale*: instant for the caller, but each one still triggered a refresh.
+That run showed a 2.2× latency improvement alongside only a 1.1× load reduction. If your
+goal is downstream load, watch `freshTtl`. If it is latency, stale hits are enough.
 
 ---
 
@@ -204,11 +204,11 @@ most likely way to misuse the framework.
 
 **Already-fast operations.** The cold path costs five sequential Redis round trips. Saving
 a 5ms indexed lookup is a wash at best. In the worst measured run the overhead was +33ms
-mean — invisible against a 2.4s downstream, but it would be several times the total
-response time of a 5ms endpoint. **The endpoints where the overhead is most visible are
-exactly the ones where the benefit is smallest.**
+mean, invisible against a 2.4s downstream, but it would be several times the total
+response time of a 5ms endpoint. The endpoints where the overhead is most visible are
+exactly the ones where the benefit is smallest.
 
-**Reads with hidden side effects** — audit logging, quota decrement, session touch,
+**Reads with hidden side effects:** audit logging, quota decrement, session touch,
 "last viewed" tracking. Coalescing collapses those too, silently.
 
 **Authorization-scoped data.** If the key does not include the tenant or principal, you
@@ -216,7 +216,7 @@ will serve one tenant's data to another out of cache. That is a breach, not a bu
 "does the key include the security principal?" a hard review rule. `headerKeys` exists for
 this.
 
-**Freshness-critical reads** — balance before a transfer, inventory at checkout,
+**Freshness-critical reads:** balance before a transfer, inventory at checkout,
 permission decisions. `staleTtlSeconds` is a promise to the business, not a tuning knob.
 
 ### What the anti-pattern looks like in production
@@ -252,7 +252,7 @@ One deterministic key string names three separate Redis keys that share a hash t
 | state | `coalesce:state:{ns:key}` | bucket (bytes) | cached status + payload |
 | notify | `coalesce:notify:{ns:key}` | pub/sub topic | wake-up for waiting followers |
 
-They **must** be three distinct Redis keys — a lock stores a hash and the bucket stores a
+They **must** be three distinct Redis keys. A lock stores a hash and the bucket stores a
 plain value, so sharing one key makes the bucket write clobber the lock and every later
 lock operation fail with `WRONGTYPE`.
 
@@ -330,10 +330,10 @@ sequenceDiagram
     R-->>B: "DONE"
     B->>R: GET state
     R-->>B: DONE + payload
-    Note over B: decode, return — never touched the downstream
+    Note over B: decode, return. Never touched the downstream
 ```
 
-The poll is a jittered 200–320ms safety net. Pub/sub is fire-and-forget, so a dropped
+The poll is a jittered 200 to 320ms safety net. Pub/sub is fire-and-forget, so a dropped
 notification must not strand a follower; the poll alone is sufficient to make progress.
 
 ### Stale-while-revalidate
@@ -347,7 +347,7 @@ sequenceDiagram
 
     C->>R: GET state
     R-->>C: DONE, age 45s (freshTtl = 30s)
-    Note over C: stale — but still served
+    Note over C: stale, but still served
     C-->>C: return cached value immediately
 
     par off the response path
@@ -362,8 +362,8 @@ sequenceDiagram
     end
 ```
 
-Concurrent stale readers all get an instant response, and exactly one refresh runs. **If a
-background refresh fails, the previous value is deliberately left in place** — which is why
+Concurrent stale readers all get an instant response, and exactly one refresh runs. If a
+background refresh fails, the previous value is deliberately left in place, which is why
 `staleTtlSeconds` doubles as your ride-through window for a downstream outage.
 
 ### Crash recovery
@@ -379,7 +379,7 @@ sequenceDiagram
     R-->>A: acquired
     A->>A: executing...
     B->>R: tryLock → refused, enters wait loop
-    Note over A: pod dies — no result, no unlock
+    Note over A: pod dies. No result, no unlock
 
     loop every ~250ms, up to waitTimeout
         B->>R: GET state → still ABSENT
@@ -393,8 +393,8 @@ sequenceDiagram
 ```
 
 Recovery depends on waiters re-attempting the lock, not merely re-reading the bucket. It
-therefore requires **`waitTimeoutSeconds` > `pendingTtlSeconds`** — otherwise every waiter
-has given up before the dead leader's lease expires and the crash surfaces as a wave of
+therefore requires `waitTimeoutSeconds` > `pendingTtlSeconds`. Otherwise every waiter has
+given up before the dead leader's lease expires and the crash surfaces as a wave of
 errors. Measured recovery with `pendingTtl = 3s`: one takeover at 2.96s, zero timeouts.
 
 ### Bucket state machine
@@ -405,16 +405,16 @@ stateDiagram-v2
     ABSENT --> DONE: leader succeeds
     ABSENT --> FAILED: leader errors
     DONE --> DONE: background refresh succeeds
-    DONE --> DONE: refresh FAILS — last good value kept
+    DONE --> DONE: refresh FAILS, last good value kept
     DONE --> ABSENT: staleTtl expires
     FAILED --> DONE: one waiter retries, succeeds
     FAILED --> FAILED: retry fails again
     FAILED --> ABSENT: staleTtl expires
 ```
 
-`FAILED` frees the lock immediately for exactly one retry. There is deliberately **no
-backoff** — retry policy and circuit breaking are a separate concern that belongs in a
-layer around the annotated method, not inside a coalescing framework.
+`FAILED` frees the lock immediately for exactly one retry. There is deliberately no
+backoff: retry policy and circuit breaking are a separate concern that belongs in a layer
+around the annotated method, not inside a coalescing framework.
 
 ### Key derivation
 
@@ -423,15 +423,15 @@ coalesce:{Namespace:spelResult:HeaderA=x|HeaderB=y}
           └──────────── one hash tag ────────────┘
 ```
 
-Nothing makes a key "globally unique" on its own — one Redis stands behind every pod, so
+Nothing makes a key "globally unique" on its own. One Redis stands behind every pod, so
 any string all pods agree on already names the same entry. The whole engineering problem is
-making every pod compute the **byte-identical** string for the same logical call:
+making every pod compute the byte-identical string for the same logical call:
 
-- Never derive a key from `toString()`/`hashCode()` of a DTO — identity-based and differs
-  per instance. Reference explicit fields via SpEL.
+- Never derive a key from `toString()`/`hashCode()` of a DTO. It is identity-based and
+  differs per instance. Reference explicit fields via SpEL.
 - `headerKeys` is sorted internally, so declaration order cannot change the key. Values are
   trimmed.
-- If hashing a whole payload, serialize it canonically first — two JSON encodings of the
+- If hashing a whole payload, serialize it canonically first: two JSON encodings of the
   same object with different property order hash differently.
 - Namespace defaults to `ClassSimpleName.methodName`, so the same key value used by two
   methods cannot collide.
@@ -447,7 +447,7 @@ bytes 9..    payload     encoded result, or UTF-8 error message
 ```
 
 Two reasons this is not a string prefix. A real payload can legitimately begin with the
-bytes `FAILED:`, and — more subtly — the age comparison behind stale-while-revalidate needs
+bytes `FAILED:`, and, more subtly, the age comparison behind stale-while-revalidate needs
 the time the value was *written*. Stamping `computedAt` at read time makes every cached
 value look freshly computed, and background refresh never fires at all.
 
@@ -466,11 +466,11 @@ cold path is why it is a bad deal when every key is unique.
 
 ## The four TTL parameters
 
-All four are independent clocks, and **only one is an actual Redis TTL**:
+All four are independent clocks, and only one is an actual Redis TTL:
 
 | parameter | what it physically is | measured from |
 |---|---|---|
-| `freshTtlSeconds` | an age comparison — nothing expires | `computedAt` in the envelope |
+| `freshTtlSeconds` | an age comparison; nothing expires | `computedAt` in the envelope |
 | `staleTtlSeconds` | the **Redis TTL** on the bucket | write time |
 | `pendingTtlSeconds` | the **lock lease** | lock acquisition |
 | `waitTimeoutSeconds` | a Reactor timeout on the follower | the follower's arrival |
@@ -490,43 +490,43 @@ after E+stale        key gone. next caller executes cold and waits for it.
 
 Both the fresh and stale clocks start when the value **lands**, not when execution started.
 
-### `freshTtlSeconds` — "how stale can this be before I go get a new one?"
+### `freshTtlSeconds`: "how stale can this be before I go get a new one?"
 
-Not a correctness bound; it is **the load knob**. Below it you save an execution; above it
+Not a correctness bound; it is the load knob. Below it you save an execution; above it
 you still serve instantly but pay for a refresh. Shortening it buys freshness at a linear
 cost in downstream load.
 
-Set it **well above the downstream's p99**, not near it. At `freshTtl = 2s` against a 2.2s
-call, a value is stale almost as soon as it lands — a measured run in that configuration
+Set it well above the downstream's p99, not near it. At `freshTtl = 2s` against a 2.2s
+call, a value is stale almost as soon as it lands. A measured run in that configuration
 achieved only 8.78% load reduction while issuing 6,716 background refreshes.
 
 - `0` → refresh on every read after the first write.
 - equal to `staleTtlSeconds` → stale-while-revalidate is effectively disabled; a plain
   cache that expires and forces a cold execution.
 
-### `staleTtlSeconds` — "if the downstream is down, how long do I keep serving?"
+### `staleTtlSeconds`: "if the downstream is down, how long do I keep serving?"
 
 This is a resilience decision more than a caching one. Refresh failures deliberately leave
 the previous value in place, so `staleTtl` is literally your outage ride-through window.
 When it expires you go from "slightly old data" to "every caller gets an error."
 
-It is simultaneously the hard correctness bound — the oldest data any caller can ever
-receive — and your Redis memory bill: `keys × payload × staleTtl`.
+It is simultaneously the hard correctness bound (the oldest data any caller can ever
+receive) and your Redis memory bill: `keys × payload × staleTtl`.
 
-### `pendingTtlSeconds` — "what is the longest this call could legitimately take?"
+### `pendingTtlSeconds`: "what is the longest this call could legitimately take?"
 
 p99 plus margin, never p50.
 
 It does **not** cancel a slow leader. The leader keeps running; the lock merely becomes
-claimable. So setting it too low does not stop anything — it lets a second leader start
+claimable. So setting it too low does not stop anything. It lets a second leader start
 alongside the first, doubling load on a downstream already slow enough to have tripped it.
 
-Because the lease is passed explicitly, **Redisson's watchdog does not renew it**. People
+Because the lease is passed explicitly, Redisson's watchdog does not renew it. People
 often assume Redisson keeps a held lock alive automatically; that only happens when you
-acquire without a lease. Here `pendingTtl` is a hard ceiling — which is exactly what makes
+acquire without a lease. Here `pendingTtl` is a hard ceiling, which is exactly what makes
 crash recovery work.
 
-### `waitTimeoutSeconds` — "how long will my caller tolerate waiting?"
+### `waitTimeoutSeconds`: "how long will my caller tolerate waiting?"
 
 Should sit just under whatever timeout your client, gateway or ingress enforces. Beyond
 that you are holding connections for requests nobody is listening to. Exceeding it raises
@@ -564,7 +564,7 @@ For a crash to be fully invisible you want `waitTimeout > pendingTtl + p99(exec)
 | `namespace` | `Class.method` | logical namespace prefix |
 | `freshTtlSeconds` | `"0"` | age below which no refresh is triggered |
 | `staleTtlSeconds` | `"60"` | Redis TTL; outer bound on usable staleness |
-| `pendingTtlSeconds` | `"30"` | lock lease — crash-recovery safety net |
+| `pendingTtlSeconds` | `"30"` | lock lease, the crash-recovery safety net |
 | `waitTimeoutSeconds` | `"45"` | follower's hard cap before `CoalesceTimeoutException` |
 
 ### Configuring the annotation from properties or the environment
@@ -582,24 +582,22 @@ public Mono<OrderDto> getOrder(String orderId) { ... }
 ```
 
 Anything Spring's `Environment` can resolve works, which includes environment variables
-through relaxed binding — `ORDERS_FRESH_TTL=5` satisfies `${orders.fresh-ttl}`. So the same
+through relaxed binding: `ORDERS_FRESH_TTL=5` satisfies `${orders.fresh-ttl}`. So the same
 image can run with a 5-second TTL in staging and 300 in production.
 
-Three things worth knowing:
-
-- **Always give a placeholder a default** (the `:30` above) unless the property is genuinely
+- Always give a placeholder a default (the `:30` above) unless the property is genuinely
   required. Attributes resolve on first invocation, not at startup, so a missing property
   fails a request rather than failing to boot.
-- **Resolution is cached per method.** Placeholders cost nothing per call, and a property
+- Resolution is cached per method. Placeholders cost nothing per call, and a property
   changed at runtime is not picked up.
-- **A resolved `headerKeys` value is split on commas**, so one property can supply the whole
+- A resolved `headerKeys` value is split on commas, so one property can supply the whole
   list: `${orders.headers:X-Tenant-Id,X-Region}`. Otherwise the list length would be fixed
   at compile time, which defeats the point.
 
 The numeric attributes are declared as `String` for the same reason `@Scheduled` has
 `fixedDelayString`: Java requires annotation values to be compile-time constants, so
-`freshTtlSeconds = ${...}` cannot typecheck as a `long`. Literals still work — `"30"` is
-read as 30 — and a value that does not parse fails with the method name and the raw
+`freshTtlSeconds = ${...}` cannot typecheck as a `long`. Literals still work (`"30"` is
+read as 30) and a value that does not parse fails with the method name and the raw
 attribute in the message.
 
 ### Properties
@@ -629,7 +627,7 @@ coalesce:
     connection-minimum-idle-size: 10
 ```
 
-**`mode: cluster`** — seed nodes only; Redisson discovers the rest of the topology.
+**`mode: cluster`**: seed nodes only; Redisson discovers the rest of the topology.
 
 ```yaml
 coalesce:
@@ -639,7 +637,7 @@ coalesce:
       - redis://node1:6379
       - redis://node2:6379
       - redis://node3:6379
-    read-mode: MASTER           # leave this alone -- see below
+    read-mode: MASTER           # leave this alone, see below
     scan-interval: 5s
     master-connection-pool-size: 64
     master-connection-minimum-idle-size: 10
@@ -651,11 +649,11 @@ coalesce:
 logs a warning.
 
 > **`read-mode` is a correctness setting, not a performance one.** Replication is
-> asynchronous, so a replica read can show a follower a stale `FAILED` — or a stale absence —
+> asynchronous, so a replica read can show a follower a stale `FAILED`, or a stale absence,
 > for work the leader has *already completed*, and that follower will re-execute it. The
 > library warns loudly if you set anything but `MASTER`, but it honours your choice.
 
-**TLS** — applies to either mode.
+**TLS** applies to either mode.
 
 ```yaml
 coalesce:
@@ -678,7 +676,7 @@ all work. Leave them unset to use the JVM's own truststore, which is usually rig
 managed Redis with a publicly-trusted certificate.
 
 `enabled: true` exists because Redisson decides whether a connection is encrypted from the
-address scheme alone — configuring a truststore against a `redis://` address connects in
+address scheme alone: configuring a truststore against a `redis://` address connects in
 plaintext while looking fully configured for TLS. Setting it rewrites the scheme so the two
 cannot disagree; addresses already written as `rediss://` are encrypted either way.
 
@@ -686,8 +684,8 @@ cannot disagree; addresses already written as `rediss://` are encrypted either w
 addressed by IP usually needs. `NONE` disables verification entirely and makes the
 connection trivially interceptable.
 
-**Anything else** — sentinel, replicated, master-slave, or tuning these properties do not
-reach — is configured by declaring your own `RedissonClient` or `RedissonReactiveClient`
+Anything else (sentinel, replicated, master-slave, or tuning these properties do not
+reach) is configured by declaring your own `RedissonClient` or `RedissonReactiveClient`
 bean. Every `coalesce.redis.*` key is ignored when you do.
 
 The starter ships `spring-configuration-metadata.json`, so all of these get completion and
@@ -695,7 +693,7 @@ inline documentation in an IDE.
 
 ### Getting headers into the key
 
-WebFlux hops event-loop threads, so there is no thread-local request — `RequestContextHolder`
+WebFlux hops event-loop threads, so there is no thread-local request; `RequestContextHolder`
 does not work here. Two options:
 
 **A. Accept the exchange as a parameter** and reference it in SpEL directly:
@@ -724,15 +722,15 @@ the key *inside* `deferContextual` rather than eagerly.
 | `meanFollowerWaitMillis` | should cluster near the leader's execution time |
 | `backgroundRefreshes` | refreshes that won the lock and ran |
 | `failedRetries` | takeovers from a cached `FAILED` |
-| `leaderTakeovers` | waiters that claimed an expired lease — crash recovery firing |
+| `leaderTakeovers` | waiters that claimed an expired lease; crash recovery firing |
 | `timeouts` | `CoalesceTimeoutException` raised; should be rare |
 | `payloadsTooLarge` | results computed but deliberately not cached |
 
-**The canary: `(cacheHits + followerWaits) / requests`.** Near zero means the framework is
-pure overhead on that endpoint — no interpretation needed, turn it off there.
+The canary is `(cacheHits + followerWaits) / requests`. Near zero means the framework is
+pure overhead on that endpoint. No interpretation needed, turn it off there.
 
-**The monitoring hazard.** A measured run showed 130 downstream failures and a **0.00% error
-rate to clients**: stale-while-revalidate served the last-good value and swallowed them,
+The monitoring hazard: a measured run showed 130 downstream failures and a 0.00% error
+rate to clients. Stale-while-revalidate served the last-good value and swallowed them,
 taking effective availability from ~95% to ~100%. That is a real resilience win and a real
 blind spot in one. Those failures exist only in a `WARN` log line. Alert on refresh
 failures, or a sick dependency stays invisible until `staleTtl` expires and everything
@@ -744,7 +742,7 @@ falls over at once.
 
 ### Payload size
 
-Redisson buffers every command in Netty's **direct** arena before writing. A production run
+Redisson buffers every command in Netty's direct arena before writing. A production run
 that cached ~127MB entries exhausted a 4GiB `MaxDirectMemorySize` and killed the process:
 
 ```
@@ -754,28 +752,28 @@ Caused by: java.lang.OutOfMemoryError:
   ... PSETEX coalesce:state:{...} 120000 UnpooledHeapByteBuf(widx: 126940610)
 ```
 
-The payload never reached Redis; it died in the encoder. Note that Redisson's accompanying
-advice — *"Check CPU usage of the JVM. Try to increase nettyThreads"* — is boilerplate
-attached to any write failure and is actively misleading here; more Netty threads means
-more concurrent oversized writes.
+The payload never reached Redis; it died in the encoder. Redisson's accompanying advice,
+*"Check CPU usage of the JVM. Try to increase nettyThreads"*, is boilerplate attached to
+any write failure and is actively misleading here; more Netty threads means more
+concurrent oversized writes.
 
-`coalesce.max-payload-bytes` now bounds this. Over the limit, the caller still gets its
+`coalesce.max-payload-bytes` bounds this. Over the limit, the caller still gets its
 result, the entry is simply not cached, a warning names the actual size, and
-`payloadsTooLarge` counts it. Oversized keys therefore get no coalescing at all — which the
+`payloadsTooLarge` counts it. Oversized keys therefore get no coalescing at all, which the
 metric makes visible rather than silent.
 
 ### Redis Cluster
 
-- **Hash tags on every key.** Already applied by `resolveKey`; do not remove.
-- **`ReadMode.MASTER`.** With `SLAVE` or `MASTER_SLAVE`, a `bucket.get()` can be served by a
+- Hash tags on every key. Already applied by `resolveKey`; do not remove.
+- `ReadMode.MASTER`. With `SLAVE` or `MASTER_SLAVE`, a `bucket.get()` can be served by a
   replica and return stale data. The dangerous case: a follower reads a stale `FAILED`
   after a retry has already succeeded, wins the now-free lock, and re-executes completed
   work. The values here are tiny; correctness beats read throughput.
-- **Sharded topics on Redis 7+.** Classic cluster `PUBLISH` broadcasts to every node, so
+- Sharded topics on Redis 7+. Classic cluster `PUBLISH` broadcasts to every node, so
   each publish costs O(shards) of internal traffic for one listener. `getShardedTopic` keeps
   it on the owning shard; the shared hash tag already guarantees publisher and subscriber
   agree on the slot.
-- **Hot keys get no relief from sharding.** With hash tags, everything for one key lands on
+- Hot keys get no relief from sharding. With hash tags, everything for one key lands on
   one shard. Sharding spreads *many distinct* keys, never a single hot one.
 
 ### Duplicate leaders during failover
@@ -784,8 +782,8 @@ Redis replication is asynchronous. A primary can acknowledge a lock, die before 
 and a promoted replica will happily grant the same lock to a second pod. No configuration
 eliminates this; `WAIT` only narrows it, at a latency cost on every acquire.
 
-This is acceptable **only** because annotated methods are expected to be idempotent. A rare
-double execution during failover means doing the work twice — the same outcome as running
+This is acceptable only because annotated methods are expected to be idempotent. A rare
+double execution during failover means doing the work twice, the same outcome as running
 with no framework at all. It is a performance optimisation degrading, not a correctness
 violation.
 
@@ -798,8 +796,8 @@ an identical simulated downstream, so the gap in executions is purely the framew
 
 1. Send **00 Reset metrics**.
 2. Run folder **A - WITHOUT coalescing** with N iterations.
-3. Run folder **B - WITH coalescing** with the **same** N — equal request counts are what
-   make the comparison fair.
+3. Run folder **B - WITH coalescing** with the same N. Equal request counts are what make
+   the comparison fair.
 4. Send **99 Report** and read the console.
 
 Collection variables:
@@ -817,18 +815,18 @@ costing more than it saves.
 
 ## Limitations and non-goals
 
-- **Not exactly-once.** Best-effort deduplication and a TPS shield, not a distributed
+- Not exactly-once. Best-effort deduplication and a TPS shield, not a distributed
   transaction primitive.
-- **`Flux` support is for bounded streams only.** The leader collects the whole `Flux` into
-  a `List` before caching; there is no live multicast of an unbounded stream across pods.
-- **No local per-pod tier.** Every follower pays a Redis round trip plus deserialisation
-  even for same-pod concurrency. Revisit only if profiling shows one hot key generating
-  heavy same-pod traffic — it would be a pure addition, funnelling local subscribers into
-  one call above the entry point.
-- **No retry policy, no backoff, no circuit breaking.** Deliberately out of scope; wrap the
+- `Flux` support is for bounded streams only. The leader collects the whole `Flux` into a
+  `List` before caching; there is no live multicast of an unbounded stream across pods.
+- No local per-pod tier. Every follower pays a Redis round trip plus deserialisation even
+  for same-pod concurrency. Revisit only if profiling shows one hot key generating heavy
+  same-pod traffic. It would be a pure addition, funnelling local subscribers into one
+  call above the entry point.
+- No retry policy, no backoff, no circuit breaking. Deliberately out of scope; wrap the
   annotated method instead.
-- **Spring AOP proxying rules apply.** Self-invocation is not intercepted, and state must be
-  read through methods rather than fields — reading a field through a CGLIB proxy returns
+- Spring AOP proxying rules apply. Self-invocation is not intercepted, and state must be
+  read through methods rather than fields: reading a field through a CGLIB proxy returns
   the proxy's own uninitialised field, not the target's.
 
 ---
@@ -836,7 +834,7 @@ costing more than it saves.
 ## Repository layout
 
 ```
-coalesce-spring-boot-starter/   the published library — net.bitsar:coalesce-spring-boot-starter
+coalesce-spring-boot-starter/   the published library, net.bitsar:coalesce-spring-boot-starter
 coalesce-demo/                  A/B load harness, not published
 consumer-check/                 post-release check against the artifact on Maven Central
 docs/                           design notes written before the implementation
@@ -846,7 +844,7 @@ postman/                        collection for driving the demo endpoint
 The demo depends on the starter exactly the way a downstream application does: through the
 published artifact's auto-configuration, with no component scan reaching into
 `net.bitsar.coalesce`. If the starter stops wiring itself, the demo's integration tests fail
-rather than quietly falling back to a scanned bean.
+rather than falling back to a scanned bean.
 
 ### Extension points
 
@@ -859,7 +857,7 @@ rather than quietly falling back to a scanned bean.
 
 Declare a bean of the interface type and the auto-configuration backs off. Every pod in a
 cluster must agree: two pods with different codecs or key conventions will not coalesce with
-each other, they will just quietly duplicate work.
+each other; they will just duplicate the work.
 
 ### Contributing
 
@@ -870,7 +868,7 @@ merging to it publishes to Maven Central. See [CONTRIBUTING.md](CONTRIBUTING.md)
 
 `.github/workflows/ci.yml` runs on every pull request against `main`. It builds both
 modules and runs the whole suite against a Redis service container, then
-writes a per-suite table to the run summary — because "BUILD SUCCESSFUL" alone cannot tell a
+writes a per-suite table to the run summary, because "BUILD SUCCESSFUL" alone cannot tell a
 run where the Redis-gated integration tests executed from one where they all skipped, and
 those are the only tests that prove coalescing works.
 
@@ -892,7 +890,7 @@ status checks for one commit.
 ```
 
 Integration tests skip themselves when Redis is not reachable on `localhost:6379`, so the
-build passes on a machine without one — but they are the tests that actually prove
+build passes on a machine without one, but they are the tests that actually prove
 coalescing works, so run a Redis before trusting a green build.
 
 After a release, verify what actually landed on Maven Central:
@@ -901,7 +899,7 @@ After a release, verify what actually landed on Maven Central:
 ./gradlew -p consumer-check test -PcoalesceVersion=0.1.0
 ```
 
-`consumer-check` is a separate Gradle build, not a subproject — that is deliberate. As a
+`consumer-check` is a separate Gradle build, not a subproject, and that is deliberate. As a
 subproject Gradle would substitute the local sources for the dependency and the check would
 quietly stop testing the published artifact. It resolves only from `mavenCentral()`, lives
 in `com.acme.app` so nothing scans `net.bitsar.coalesce`, and does not set `-parameters`,
