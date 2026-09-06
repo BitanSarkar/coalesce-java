@@ -10,6 +10,7 @@ import org.springframework.http.HttpHeaders;
 import reactor.core.publisher.Mono;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /** Pure key-derivation tests: no Redis, no reactive chain. */
 class CoalesceKeyResolverTest {
@@ -37,6 +38,11 @@ class CoalesceKeyResolverTest {
 
         @Coalesce(key = "#orderId", namespace = "orders.v2")
         Mono<String> namespaced(String orderId) {
+            return Mono.empty();
+        }
+
+        @Coalesce(key = "#missing")
+        Mono<String> unknownVariable(String orderId) {
             return Mono.empty();
         }
     }
@@ -119,5 +125,40 @@ class CoalesceKeyResolverTest {
         assertThat(state).endsWith(tag);
         assertThat(lock).endsWith(tag);
         assertThat(notify).endsWith(tag);
+    }
+
+    // ---------- a key that does not resolve must never become a shared key ----------
+
+    /**
+     * The failure this guards against is the worst one the library has: a null key makes
+     * every distinct call collapse onto the single key {@code Class.method:null}, so one
+     * caller is served another caller's cached result. Loud beats silent.
+     */
+    @Test
+    void nullKeyIsRejectedRatherThanSharedAcrossCallers() throws Exception {
+        assertThatThrownBy(() ->
+                resolver.resolve(method("plain"), new Object[]{null}, attributes("plain"), HttpHeaders.EMPTY))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("#orderId")
+                .hasMessageContaining("plain")
+                .hasMessageContaining("resolved to null");
+    }
+
+    /** Same reasoning: a blank key groups unrelated calls together. */
+    @Test
+    void blankKeyIsRejected() throws Exception {
+        assertThatThrownBy(() ->
+                resolver.resolve(method("plain"), new Object[]{"   "}, attributes("plain"), HttpHeaders.EMPTY))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("resolved to an empty string");
+    }
+
+    /** An expression naming a parameter that does not exist evaluates to null, not an error. */
+    @Test
+    void expressionReferencingAnUnknownParameterIsRejected() throws Exception {
+        assertThatThrownBy(() -> resolver.resolve(
+                method("unknownVariable"), new Object[]{"A-1"}, attributes("unknownVariable"), HttpHeaders.EMPTY))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("#missing");
     }
 }

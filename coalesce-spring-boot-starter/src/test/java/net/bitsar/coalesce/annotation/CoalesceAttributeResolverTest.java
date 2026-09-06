@@ -77,6 +77,27 @@ class CoalesceAttributeResolverTest {
         Mono<String> negative(String id) {
             return Mono.empty();
         }
+
+        @Coalesce(key = "#id", pendingTtlSeconds = "10", waitTimeoutSeconds = "${orders.wait-timeout:3}")
+        Mono<String> waitBelowPending(String id) {
+            return Mono.empty();
+        }
+
+        @Coalesce(key = "#id", pendingTtlSeconds = "10", waitTimeoutSeconds = "10")
+        Mono<String> waitEqualToPending(String id) {
+            return Mono.empty();
+        }
+
+        @Coalesce(key = "#id", freshTtlSeconds = "120", staleTtlSeconds = "60",
+                pendingTtlSeconds = "10", waitTimeoutSeconds = "30")
+        Mono<String> freshAboveStale(String id) {
+            return Mono.empty();
+        }
+
+        @Coalesce(key = "#id", freshTtlSeconds = "60", staleTtlSeconds = "60")
+        Mono<String> freshEqualToStale(String id) {
+            return Mono.empty();
+        }
     }
 
     private CoalesceAttributes resolve(String method, Map<String, String> properties) throws Exception {
@@ -197,5 +218,51 @@ class CoalesceAttributeResolverTest {
         CoalesceAttributes attrs = new CoalesceAttributeResolver(null).resolve(m, m.getAnnotation(Coalesce.class));
 
         assertThat(attrs.freshTtl()).isEqualTo(Duration.ofSeconds(15));
+    }
+
+    // ---------- relationships between attributes ----------
+
+    /**
+     * The nastiest misconfiguration this can have: every attribute parses, nothing warns,
+     * and crash recovery simply never happens because followers are gone before the dead
+     * leader's lease expires.
+     */
+    @Test
+    void waitTimeoutBelowPendingTtlIsRejected() {
+        assertThatThrownBy(() -> resolve("waitBelowPending", Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("waitTimeoutSeconds")
+                .hasMessageContaining("pendingTtlSeconds")
+                .hasMessageContaining("crash recovery");
+    }
+
+    /** Equal is not good enough: the lease has to expire while a follower is still waiting. */
+    @Test
+    void waitTimeoutEqualToPendingTtlIsRejected() {
+        assertThatThrownBy(() -> resolve("waitEqualToPending", Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("not greater than pendingTtlSeconds");
+    }
+
+    @Test
+    void freshTtlAboveStaleTtlIsRejected() {
+        assertThatThrownBy(() -> resolve("freshAboveStale", Map.of()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("freshTtlSeconds")
+                .hasMessageContaining("staleTtlSeconds");
+    }
+
+    /** The relationship is checked against resolved values, not the literals in the source. */
+    @Test
+    void relationshipIsCheckedAfterPlaceholderResolution() throws Exception {
+        CoalesceAttributes attrs = resolve("waitBelowPending", Map.of("orders.wait-timeout", "45"));
+        assertThat(attrs.waitTimeout()).isEqualTo(Duration.ofSeconds(45));
+    }
+
+    /** Equal fresh and stale is legal: it disables stale-while-revalidate, which is documented. */
+    @Test
+    void freshTtlEqualToStaleTtlIsAllowed() throws Exception {
+        CoalesceAttributes attrs = resolve("freshEqualToStale", Map.of());
+        assertThat(attrs.freshTtl()).isEqualTo(attrs.staleTtl());
     }
 }
