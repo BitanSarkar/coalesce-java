@@ -10,6 +10,7 @@ import net.bitsar.coalesce.codec.JsonCoalesceCodec;
 import net.bitsar.coalesce.coordinator.CoalesceCoordinator;
 import net.bitsar.coalesce.coordinator.RedissonCoalesceCoordinator;
 import net.bitsar.coalesce.metrics.CoalesceMetrics;
+import net.bitsar.coalesce.toggle.CoalesceToggle;
 import org.aspectj.lang.annotation.Aspect;
 import org.redisson.api.RedissonReactiveClient;
 import org.springframework.beans.factory.ObjectProvider;
@@ -114,6 +115,16 @@ public class CoalesceAutoConfiguration {
      * @param properties        the {@code coalesce.*} settings
      * @return the aspect that intercepts {@code @Coalesce} methods
      */
+    /**
+     * The runtime kill switch. Declare your own bean to start it from somewhere other than
+     * {@code coalesce.active}, such as a feature-flag service.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public CoalesceToggle coalesceToggle(CoalesceProperties properties) {
+        return new CoalesceToggle(properties.isActive());
+    }
+
     @Bean
     @ConditionalOnBean(CoalesceCoordinator.class)
     @ConditionalOnMissingBean
@@ -122,8 +133,9 @@ public class CoalesceAutoConfiguration {
                                          CoalesceMetrics metrics,
                                          CoalesceKeyResolver keyResolver,
                                          CoalesceAttributeResolver attributeResolver,
+                                         CoalesceToggle toggle,
                                          CoalesceProperties properties) {
         return new CoalesceAspect(coordinator, codec, metrics, keyResolver, attributeResolver,
-                properties.getMaxPayloadBytes());
+                toggle, properties.getMaxPayloadBytes());
     }
 }

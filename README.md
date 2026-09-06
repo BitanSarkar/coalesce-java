@@ -605,6 +605,7 @@ attribute in the message.
 ```yaml
 coalesce:
   enabled: true                 # false disables the aspect entirely; nothing touches Redis
+  active: true                  # starting position of the runtime kill switch, see below
   # Results larger than this are returned to the caller but never written to Redis.
   max-payload-bytes: 1048576
   redis:
@@ -691,6 +692,52 @@ bean. Every `coalesce.redis.*` key is ignored when you do.
 The starter ships `spring-configuration-metadata.json`, so all of these get completion and
 inline documentation in an IDE.
 
+### Turning it off at runtime
+
+`coalesce.enabled: false` removes the beans at startup. That is the wrong tool during an
+incident, because it needs a deploy, and a coalescing layer sits in front of a dependency
+precisely when that dependency is in trouble.
+
+`CoalesceToggle` is a switch on beans that already exist. Turning it off makes annotated
+methods behave as if the annotation were not there: the aspect calls straight through and
+nothing touches Redis, not even to read. It takes effect on the next invocation.
+
+```java
+@Autowired CoalesceToggle toggle;
+
+toggle.setActive(false);   // returns the position it replaced
+```
+
+`coalesce.active` sets where it starts, and defaults to true. Declare your own
+`CoalesceToggle` bean to start it from somewhere else, such as a feature-flag service.
+
+With Actuator on the classpath there is an endpoint, which has to be exposed before it
+appears:
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: coalesce
+```
+
+```bash
+curl localhost:8080/actuator/coalesce
+# {"active":true,"leaderExecutions":41,"cacheHits":1180, ...}
+
+curl -X POST localhost:8080/actuator/coalesce \
+     -H 'Content-Type: application/json' -d '{"active": false}'
+```
+
+The counters come back alongside the switch because the question anyone flipping it
+actually has is whether coalescing is helping, which
+`(cacheHits + followerWaits) / requests` answers and the switch position does not. This is
+a write endpoint that disables a production safeguard, so secure it as one.
+
+Attribute resolution is skipped entirely while bypassed, so a method whose TTLs do not
+validate still serves traffic with the switch off.
+
 ### Getting headers into the key
 
 WebFlux hops event-loop threads, so there is no thread-local request; `RequestContextHolder`
@@ -725,6 +772,7 @@ the key *inside* `deferContextual` rather than eagerly.
 | `leaderTakeovers` | waiters that claimed an expired lease; crash recovery firing |
 | `timeouts` | `CoalesceTimeoutException` raised; should be rare |
 | `payloadsTooLarge` | results computed but deliberately not cached |
+| `bypassed` | calls that ran straight through because the runtime switch is off |
 
 The canary is `(cacheHits + followerWaits) / requests`. Near zero means the framework is
 pure overhead on that endpoint. No interpretation needed, turn it off there.

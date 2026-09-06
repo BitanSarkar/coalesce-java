@@ -7,13 +7,18 @@ import net.bitsar.coalesce.codec.CoalesceCodec;
 import net.bitsar.coalesce.codec.JsonCoalesceCodec;
 import net.bitsar.coalesce.coordinator.CoalesceCoordinator;
 import net.bitsar.coalesce.coordinator.RedissonCoalesceCoordinator;
+import net.bitsar.coalesce.actuate.CoalesceEndpoint;
 import net.bitsar.coalesce.metrics.CoalesceMetrics;
+import net.bitsar.coalesce.toggle.CoalesceToggle;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.redisson.api.RedissonClient;
 import org.redisson.api.RedissonReactiveClient;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.actuate.autoconfigure.endpoint.EndpointAutoConfiguration;
+import org.springframework.boot.actuate.autoconfigure.endpoint.web.WebEndpointAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.boot.test.context.runner.ReactiveWebApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -43,7 +48,98 @@ class CoalesceAutoConfigurationTest {
                 .hasSingleBean(CoalesceCoordinator.class)
                 .hasSingleBean(CoalesceKeyResolver.class)
                 .hasSingleBean(CoalesceMetrics.class)
+                .hasSingleBean(CoalesceToggle.class)
                 .hasSingleBean(CoalesceCodec.class));
+    }
+
+    // ---------- the runtime kill switch ----------
+
+    @Test
+    void theToggleStartsActive() {
+        runner.run(context -> assertThat(context.getBean(CoalesceToggle.class).isActive()).isTrue());
+    }
+
+    /** Starting bypassed still wires everything, so it can be switched on without a restart. */
+    @Test
+    void coalesceActiveFalseStartsBypassedButFullyWired() {
+        runner.withPropertyValues("coalesce.active=false").run(context -> {
+            assertThat(context).hasSingleBean(CoalesceAspect.class);
+            assertThat(context.getBean(CoalesceToggle.class).isActive()).isFalse();
+        });
+    }
+
+    /** coalesce.enabled=false removes the beans, so there is nothing left to toggle. */
+    @Test
+    void disabledEntirelyLeavesNoToggle() {
+        runner.withPropertyValues("coalesce.enabled=false")
+                .run(context -> assertThat(context).doesNotHaveBean(CoalesceToggle.class));
+    }
+
+    @Test
+    void anApplicationCanSupplyItsOwnToggle() {
+        runner.withUserConfiguration(CustomToggleConfig.class).run(context -> {
+            assertThat(context).hasSingleBean(CoalesceToggle.class);
+            assertThat(context.getBean(CoalesceToggle.class).isActive()).isFalse();
+        });
+    }
+
+    // ---------- the Actuator endpoint ----------
+
+    /**
+     * A reactive web context, because that is the only kind this library runs in and
+     * because web exposure is what @ConditionalOnAvailableEndpoint is deciding against.
+     * Actuator is on the test classpath here, so Boot's exposure gate is all that is left.
+     */
+    private final ReactiveWebApplicationContextRunner actuatorRunner =
+            new ReactiveWebApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(
+                            CoalesceRedissonAutoConfiguration.class,
+                            CoalesceAutoConfiguration.class,
+                            CoalesceActuatorAutoConfiguration.class,
+                            EndpointAutoConfiguration.class,
+                            WebEndpointAutoConfiguration.class))
+                    .withUserConfiguration(MockRedissonConfig.class);
+
+    /** Actuator on the classpath is not enough: nothing is exposed by default. */
+    @Test
+    void theEndpointStaysOffUntilItIsExposed() {
+        actuatorRunner.run(context -> assertThat(context).doesNotHaveBean(CoalesceEndpoint.class));
+    }
+
+    @Test
+    void theEndpointAppearsOnceExposed() {
+        actuatorRunner.withPropertyValues("management.endpoints.web.exposure.include=coalesce")
+                .run(context -> assertThat(context).hasSingleBean(CoalesceEndpoint.class));
+    }
+
+    /** The endpoint reads and writes the same switch the aspect consults. */
+    @Test
+    void theEndpointFlipsTheToggleTheAspectUses() {
+        actuatorRunner.withPropertyValues("management.endpoints.web.exposure.include=coalesce")
+                .run(context -> {
+                    CoalesceEndpoint endpoint = context.getBean(CoalesceEndpoint.class);
+                    CoalesceToggle toggle = context.getBean(CoalesceToggle.class);
+
+                    assertThat(endpoint.status()).containsEntry("active", true);
+
+                    assertThat(endpoint.setActive(false))
+                            .containsEntry("active", false)
+                            .containsEntry("previouslyActive", true);
+                    assertThat(toggle.isActive()).isFalse();
+
+                    assertThat(endpoint.status())
+                            .containsEntry("active", false)
+                            .containsKey("cacheHits")
+                            .containsKey("bypassed");
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class CustomToggleConfig {
+        @Bean
+        CoalesceToggle coalesceToggle() {
+            return new CoalesceToggle(false);
+        }
     }
 
     @Test

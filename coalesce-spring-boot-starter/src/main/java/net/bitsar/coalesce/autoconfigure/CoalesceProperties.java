@@ -23,6 +23,16 @@ public class CoalesceProperties {
     private boolean enabled = true;
 
     /**
+     * The starting position of the runtime kill switch. False starts the application with
+     * coalescing bypassed: annotated methods call straight through and nothing touches
+     * Redis, but the beans exist, so it can be switched back on without a restart.
+     *
+     * <p>Not the same as {@code enabled}, which decides whether any of this is wired at
+     * all. With {@code enabled=false} there is nothing to switch.
+     */
+    private boolean active = true;
+
+    /**
      * Results larger than this are still returned to the caller but never written to Redis.
      * Redisson buffers every command in Netty's direct arena before the write, so a handful
      * of oversized entries in flight can exhaust MaxDirectMemorySize and kill the process —
@@ -38,6 +48,14 @@ public class CoalesceProperties {
 
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
+    }
+
+    public boolean isActive() {
+        return active;
+    }
+
+    public void setActive(boolean active) {
+        this.active = active;
     }
 
     public int getMaxPayloadBytes() {

@@ -8,6 +8,7 @@ import net.bitsar.coalesce.coordinator.CoalesceCoordinator;
 import net.bitsar.coalesce.core.CoalesceState;
 import net.bitsar.coalesce.exception.CoalesceTimeoutException;
 import net.bitsar.coalesce.metrics.CoalesceMetrics;
+import net.bitsar.coalesce.toggle.CoalesceToggle;
 import net.bitsar.coalesce.web.HeaderCaptureFilter;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
@@ -44,6 +45,7 @@ public class CoalesceAspect {
     private final CoalesceMetrics metrics;
     private final CoalesceKeyResolver keyResolver;
     private final CoalesceAttributeResolver attributeResolver;
+    private final CoalesceToggle toggle;
 
     /**
      * Refuse to cache anything larger than this. Redisson buffers each command in Netty's
@@ -58,12 +60,14 @@ public class CoalesceAspect {
                           CoalesceMetrics metrics,
                           CoalesceKeyResolver keyResolver,
                           CoalesceAttributeResolver attributeResolver,
+                          CoalesceToggle toggle,
                           int maxPayloadBytes) {
         this.coordinator = coordinator;
         this.codec = codec;
         this.metrics = metrics;
         this.keyResolver = keyResolver;
         this.attributeResolver = attributeResolver;
+        this.toggle = toggle;
         this.maxPayloadBytes = maxPayloadBytes;
     }
 
@@ -75,9 +79,18 @@ public class CoalesceAspect {
     // ---------- entry point ----------
 
     @Around("@annotation(coalesce)")
-    public Object around(ProceedingJoinPoint pjp, Coalesce coalesce) {
+    public Object around(ProceedingJoinPoint pjp, Coalesce coalesce) throws Throwable {
         MethodSignature sig = (MethodSignature) pjp.getSignature();
         Class<?> returnType = sig.getMethod().getReturnType();
+
+        // The kill switch is checked before anything else, including attribute resolution.
+        // Bypassed means bypassed: a misconfigured TTL must not fail a request that the
+        // operator has already taken the framework out of, and the whole reason to reach
+        // for this is that something is going wrong.
+        if (!toggle.isActive()) {
+            metrics.bypass();
+            return pjp.proceed();
+        }
 
         // The key is resolved INSIDE deferContextual: header values live in the Reactor
         // Context, which is only visible once inside the reactive chain.
