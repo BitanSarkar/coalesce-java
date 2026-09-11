@@ -58,7 +58,7 @@ public Mono<OrderDto> getOrder(String orderId) {
 Gradle:
 
 ```groovy
-implementation 'net.bitsar:coalesce-spring-boot-starter:0.2.1'
+implementation 'net.bitsar:coalesce-spring-boot-starter:0.2.3'
 ```
 
 Maven:
@@ -67,7 +67,7 @@ Maven:
 <dependency>
     <groupId>net.bitsar</groupId>
     <artifactId>coalesce-spring-boot-starter</artifactId>
-    <version>0.2.1</version>
+    <version>0.2.3</version>
 </dependency>
 ```
 
@@ -202,11 +202,12 @@ any side-effecting write without independent idempotency at the data layer.
 collapses below 1 and every request pays for a mechanism that shares nothing. This is the
 most likely way to misuse the framework.
 
-**Already-fast operations.** The cold path costs five sequential Redis round trips. Saving
-a 5ms indexed lookup is a wash at best. In the worst measured run the overhead was +33ms
-mean, invisible against a 2.4s downstream, but it would be several times the total
-response time of a 5ms endpoint. The endpoints where the overhead is most visible are
-exactly the ones where the benefit is smallest.
+**Already-fast operations.** The cold path costs six sequential Redis round trips: five
+for coalescing, plus one to read the kill switch. Saving a 5ms indexed lookup is a wash
+at best. In the worst measured run the overhead was +33ms mean, invisible against a 2.4s
+downstream, but it would be several times the total response time of a 5ms endpoint. The
+endpoints where the overhead is most visible are exactly the ones where the benefit is
+smallest.
 
 **Reads with hidden side effects:** audit logging, quota decrement, session touch,
 "last viewed" tracking. Coalescing collapses those too, silently.
@@ -234,6 +235,7 @@ framework: cacheHits=47  followerWaits=0  leaderExecutions=10,613
 Every percentile regressed (P95 4,450 → 4,475ms; P99 5,070 → 5,160ms). `followerWaits: 0`
 means not one request in ten thousand ever coalesced. The 47 hits were random key
 collisions. Five Redis round trips, ten thousand times, to save twenty-seven executions.
+That run predates the kill switch, which makes it six today.
 
 **`(cacheHits + followerWaits) / requests` near zero means the framework is pure overhead
 on that endpoint.** That is the canary.
@@ -469,10 +471,9 @@ cold path is why it is a bad deal when every key is unique.
 
 **Every path costs one more than the table says**, because the runtime kill switch is read
 through on each invocation, so a cache hit is really two round trips. The figures above are
-the coalescing path's own cost, and the measured runs quoted earlier in this README were
-taken before the switch existed. See
-[Turning it off at runtime](#turning-it-off-at-runtime) for why it is read rather than
-cached, and what would remove the cost.
+the coalescing path's own cost. See
+[Turning it off at runtime](#turning-it-off-at-runtime) for why the switch is read rather
+than cached, and what would remove the cost.
 
 ---
 
@@ -1002,7 +1003,7 @@ coalescing works, so run a Redis before trusting a green build.
 After a release, verify what actually landed on Maven Central:
 
 ```bash
-./gradlew -p consumer-check test -PcoalesceVersion=0.1.0
+./gradlew -p consumer-check test -PcoalesceVersion=0.2.3
 ```
 
 `consumer-check` is a separate Gradle build, not a subproject, and that is deliberate. As a
