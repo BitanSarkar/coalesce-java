@@ -17,9 +17,22 @@ Put `@Coalesce` on a `Mono`- or `Flux`-returning method and three things happen:
 3. Stale data is refreshed in the background. Callers get an instant response from the
    last known-good value while at most one call refreshes it.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/01-stampede-dark.svg">
+  <img alt="Twelve pods all miss the same cold key within a few hundred milliseconds and each calls the same slow dependency, so eleven of the twelve calls are waste." src="docs/img/01-stampede-light.svg">
+</picture>
+
 It is global-only: there is no per-pod in-memory tier. All coordination state lives in
 Redis via Redisson, so every pod is stateless with respect to coalescing and
 interchangeable at any time.
+
+That matters because a Redis-backed cache shares the *result* without sharing the *work*.
+The cache is distributed; the single-flight is not.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/02-shared-cache-unshared-work-dark.svg">
+  <img alt="Four pods each hold their own lock so coalescing happens per JVM, while all four write the identical computed value into one shared Redis cache." src="docs/img/02-shared-cache-unshared-work-light.svg">
+</picture>
 
 ```java
 @Coalesce(
@@ -149,6 +162,11 @@ and predicts each within a third of a percentage point:
 | 10 | 12.35 | 2.3s | 28.4 | 96.5% | **96.48%** |
 | ~95 | 0.26 | 4.2s | 1.10 | 8.8% | **8.78%** |
 | ~1,000,000 | 0.000018 | 122.4s | 0.002 | ~0% | **0.25%** |
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/03-ratio-curve-dark.svg">
+  <img alt="Saving plotted against ratio on a log scale. The curve is flat below ratio 1, rises steeply between 1 and 10, and flattens near 100 percent. The three measured runs sit on it at 0.25, 8.78 and 96.48 percent." src="docs/img/03-ratio-curve-light.svg">
+</picture>
 
 Screening rule:
 
