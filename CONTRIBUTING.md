@@ -29,15 +29,25 @@ burns a patch number forever.
 
 ### Merging without publishing
 
-Put `[skip release]` in the merge commit message. For a squash merge that is the pull
-request title, so a chore that does not change the artifact can be titled:
+Put `[skip release]` in the **commit message**, not only in the pull request title. A squash
+merge of a single-commit branch takes its subject from that commit and appends `(#N)`, so a
+marker that lives only in the title never reaches the message the release workflow reads:
 
 ```
 Update GitHub Actions to Node 24 runtimes [skip release]
 ```
 
-Use it for changes that cannot affect the published jar: workflows, README, tests, the
-demo, `consumer-check`.
+That distinction is not academic. 0.2.4 published from a README-only change because #6 was
+titled `[skip release]` while the commit it produced, `8bcdd89`, was not. #3 skipped
+correctly, and the only difference was that its marker was in the commit.
+
+Use it for changes that cannot affect the published jar: workflows, tests, the demo,
+`consumer-check`.
+
+Documentation no longer needs it. A push to `main` that changed nothing outside `**.md`,
+`docs/`, `postman/`, `LICENSE` and `.gitignore` is skipped by the release workflow's guard
+job, which prints the file list it decided from. Every case the guard cannot decide
+confidently publishes, so it can only ever suppress a release that had nothing in it.
 
 > A related footgun: writing the literal `[skip ci]` anywhere in a commit message, even
 > while describing it, makes GitHub suppress the workflow run entirely, before any of this

@@ -11,6 +11,16 @@ name: CI
 on:
   pull_request:
     branches: [main]
+    # A documentation change cannot break the build, and this build is not cheap: it starts a
+    # Redis service container and runs both modules. Path filters are safe here because the
+    # protect-main ruleset requires no status checks. Add one and this needs revisiting: a
+    # required check that never reports blocks the pull request outright.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'postman/**'
+      - 'LICENSE'
+      - '.gitignore'
   workflow_dispatch:
 
 # One run per branch. A new push to a PR cancels the previous run, since only the latest
