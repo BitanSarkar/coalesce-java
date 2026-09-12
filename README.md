@@ -62,6 +62,7 @@ public Mono<OrderDto> getOrder(String orderId) {
 - [Operational hazards](#operational-hazards)
 - [Benchmarking](#benchmarking)
 - [Limitations and non-goals](#limitations-and-non-goals)
+- [Open issues](#open-issues): where help is welcome
 - [Repository layout](#repository-layout)
 
 ---
@@ -282,43 +283,54 @@ them invalidates every key in flight.
 
 ### Request flow
 
+Most calls end in the first few boxes. The bucket answers them and nothing else in the
+framework runs.
+
 ```mermaid
 flowchart TD
     A["annotated method called"] --> B["resolve key<br/>namespace + SpEL + sorted headers"]
     B --> C["GET coalesce:state"]
     C --> D{"status?"}
-
+    D -->|"ABSENT / PENDING / FAILED"| Z["the coalescing path<br/><i>next two diagrams</i>"]
     D -->|DONE| E{"age &lt; freshTtl?"}
     E -->|yes| F["decode and return<br/><i>fresh hit</i>"]
     E -->|no| G["decode and return immediately<br/><i>stale hit</i>"]
     G -.->|off the response path| H["try lock for background refresh"]
     H -->|lost race| I["do nothing<br/>someone else is refreshing"]
     H -->|won| J["execute, write, publish"]
-
-    D -->|ABSENT / PENDING| K["try lock"]
-    D -->|FAILED| K
-
-    K -->|won| L["LEADER<br/>execute the method"]
-    K -->|lost| M["FOLLOWER<br/>wait loop"]
-
-    L --> N{"succeeded?"}
-    N -->|yes| O["PSETEX state = DONE<br/>PUBLISH DONE"]
-    N -->|no| P["PSETEX state = FAILED<br/>PUBLISH FAILED"]
-    O --> Q["unlock, return result"]
-    P --> R["unlock, propagate error"]
-
-    M --> S["await pub/sub OR jittered poll"]
-    S --> T["re-read state"]
-    T -->|DONE| U["decode and return"]
-    T -->|still ABSENT| V["re-attempt lock<br/>takes over a dead leader"]
-    V --> S
-    T -->|FAILED| V
-    M -.->|waitTimeout exceeded| W["CoalesceTimeoutException"]
 ```
 
 The critical rule: **every call reads the bucket before it ever touches the lock.** A
 caller arriving just after the leader released the lock must find the cached result sitting
 next to it, not re-execute from scratch.
+
+Only a miss, an entry still being computed, or a recorded failure reaches the lock.
+Exactly one caller wins it and executes:
+
+```mermaid
+flowchart TD
+    K["try lock"] -->|won| L["LEADER<br/>execute the method"]
+    L --> N{"succeeded?"}
+    N -->|yes| O["PSETEX state = DONE<br/>PUBLISH DONE"]
+    N -->|no| P["PSETEX state = FAILED<br/>PUBLISH FAILED"]
+    O --> Q["unlock, return the result"]
+    P --> R["unlock, propagate the error"]
+```
+
+Every other caller loses that lock and waits. Losing is the common case, and it is the
+path that has to survive a leader that never comes back:
+
+```mermaid
+flowchart TD
+    K["try lock"] -->|lost| M["FOLLOWER<br/>wait loop"]
+    M --> S["await pub/sub OR jittered poll"]
+    S --> T["re-read state"]
+    T -->|DONE| U["decode and return"]
+    T -->|still ABSENT| V["re-attempt lock<br/>takes over a dead leader"]
+    T -->|FAILED| V
+    V --> S
+    M -.->|waitTimeout exceeded| W["CoalesceTimeoutException"]
+```
 
 ### Cold start with followers
 
@@ -956,6 +968,62 @@ costing more than it saves.
 
 ---
 
+## Open issues
+
+The library is shaped by the runtime I work in. Everything I write is WebFlux, so the aspect
+accepts `Mono` and `Flux` only, the coordinator SPI returns reactive types, and header capture
+reads the Reactor Context. That is the problem I had, not a verdict on blocking applications,
+and it is the largest gap here.
+
+These are open on purpose rather than overlooked, and each one is a tracked issue. If any of
+them interests you, say so on the issue and the work is yours. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
+1. **Blocking and Spring MVC support [#7](https://github.com/BitanSarkar/coalesce-java/issues/7).** `CoalesceAspect` rejects any return type that is not
+   `Mono` or `Flux`, so an MVC application gets nothing. The coordination underneath is four
+   Redis operations and a wait loop, so a blocking facade over the same `CoalesceCoordinator`
+   is plausible. Open questions: what a blocking follower parks on (platform thread versus
+   virtual thread), and where `headerKeys` reads from with no Reactor Context.
+
+2. **A Lettuce coordinator [#8](https://github.com/BitanSarkar/coalesce-java/issues/8).** `CoalesceCoordinator` is six methods. Redisson is an `api`
+   dependency today, so every consumer inherits a second Redis client even when Lettuce is
+   already on the classpath. A Lettuce implementation would make Redisson optional. Most of
+   the work is Lua: a lease carrying an owner id, and a release only that owner can perform.
+
+3. **A Micrometer binding [#9](https://github.com/BitanSarkar/coalesce-java/issues/9).** `CoalesceMetrics` is a set of `AtomicLong`s behind
+   `/actuator/coalesce`. No tags, so the leader/hit/wait ratio cannot be charted per namespace,
+   and follower wait is a running total rather than a timer with percentiles.
+
+4. **A configurable follower poll interval [#10](https://github.com/BitanSarkar/coalesce-java/issues/10).** `pollDelay()` is hardcoded to 200 to 320ms. That
+   dominates the wait for a 50ms downstream and is two orders of magnitude too chatty for a
+   30 second one. It should be a property, and it should probably widen as a wait lengthens.
+
+5. **Live multicast for an unbounded `Flux` [#11](https://github.com/BitanSarkar/coalesce-java/issues/11).** The leader collects the whole sequence into a
+   `List` before caching, so streaming coalesces only while it is bounded and small. Followers
+   attaching to a leader's in-flight stream is a different design and deserves a design note
+   before any code.
+
+6. **An optional same-pod tier [#12](https://github.com/BitanSarkar/coalesce-java/issues/12).** Two concurrent callers in one JVM each pay a Redis round trip
+   and a deserialisation. A local in-flight map above the entry point would fold them into one.
+   Pure addition, but it adds a second source of truth that must respect the kill switch and
+   the TTLs.
+
+7. **Compression in the codec [#13](https://github.com/BitanSarkar/coalesce-java/issues/13).** Past `maxPayloadBytes` a result is returned and not cached, so
+   the largest responses, the ones most worth deduplicating, get no coalescing at all.
+   Compression moves that line; chunking moves it further at a large complexity cost.
+
+8. **Testcontainers for the integration tests [#14](https://github.com/BitanSarkar/coalesce-java/issues/14).** They skip when nothing answers on
+   `localhost:6379`, and they are the only tests that prove coalescing works, so a green local
+   build on a machine without Redis proves nothing. CI already runs a service container.
+
+9. **A decision on fencing tokens [#15](https://github.com/BitanSarkar/coalesce-java/issues/15).** Duplicate leaders during failover are
+   [documented](#duplicate-leaders-during-failover) and accepted, because annotated methods are
+   expected to be idempotent. Fencing tokens would let the bucket reject a stale leader's write.
+   Whether that complexity pays for itself is genuinely undecided, and the argument either way
+   is welcome.
+
+---
+
 ## Repository layout
 
 ```
@@ -988,6 +1056,8 @@ each other; they will just duplicate the work.
 
 Work lands through a pull request from a feature branch; `main` is the released line, and
 merging to it publishes to Maven Central. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+[Open issues](#open-issues) lists the gaps I know about and would happily take help on.
 
 ### Continuous integration
 
