@@ -54,6 +54,7 @@ public class CoalesceAspect {
      * Redis, it dies in the encoder.
      */
     private final int maxPayloadBytes;
+    private final Duration pollInterval;
 
     public CoalesceAspect(CoalesceCoordinator coordinator,
                           CoalesceCodec codec,
@@ -61,7 +62,8 @@ public class CoalesceAspect {
                           CoalesceKeyResolver keyResolver,
                           CoalesceAttributeResolver attributeResolver,
                           CoalesceToggle toggle,
-                          int maxPayloadBytes) {
+                          int maxPayloadBytes,
+                          Duration pollInterval) {
         this.coordinator = coordinator;
         this.codec = codec;
         this.metrics = metrics;
@@ -69,6 +71,7 @@ public class CoalesceAspect {
         this.attributeResolver = attributeResolver;
         this.toggle = toggle;
         this.maxPayloadBytes = maxPayloadBytes;
+        this.pollInterval = pollInterval;
     }
 
     /** One annotated call: everything the reactive chain below needs, resolved once. */
@@ -330,14 +333,16 @@ public class CoalesceAspect {
 
     private Mono<Object> waitThenRetry(Invocation inv) {
         return Flux.merge(
-                        coordinator.listen(inv.key()).take(1), // fast path: pub/sub wake-up
-                        Mono.delay(pollDelay()))               // safety net: pub/sub can be missed
+                        coordinator.listen(inv.key()).take(1),
+                        Mono.delay(pollDelay()))
                 .next()
                 .then(Mono.defer(() -> waitLoop(inv)));
     }
 
     private Duration pollDelay() {
-        return Duration.ofMillis(200 + ThreadLocalRandom.current().nextInt(120)); // jittered
+        long intervalMillis = pollInterval.toMillis();
+        long jitterMillis = Math.max(1, intervalMillis * 3 / 5);
+        return Duration.ofMillis(intervalMillis + ThreadLocalRandom.current().nextLong(jitterMillis));
     }
 
     // ---------- key resolution ----------
@@ -355,9 +360,7 @@ public class CoalesceAspect {
     private Type payloadType(MethodSignature sig) {
         Method method = Objects.requireNonNull(sig.getMethod(), "method");
         return TYPE_CACHE.computeIfAbsent(method, m -> {
-            ResolvableType elem = ResolvableType.forMethodReturnType(m).getGeneric(0); // T in Mono<T>/Flux<T>
-            // A Flux<T> is cached as a List<T>, so the decode type has to be the
-            // parameterized List<T> — not List.class, which would decode elements as maps.
+            ResolvableType elem = ResolvableType.forMethodReturnType(m).getGeneric(0);
             return Flux.class.isAssignableFrom(m.getReturnType())
                     ? ResolvableType.forClassWithGenerics(List.class, elem).getType()
                     : elem.getType();
